@@ -1,4 +1,4 @@
-name: Pebble Gemini JS regression tests
+name: WISP Universal TTS and JS regression tests
 
 on:
   push:
