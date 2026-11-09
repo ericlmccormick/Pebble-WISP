@@ -130,6 +130,10 @@ static float s_volume=1.0f;
     if (s_stream_end_received || s_ignore_audio) return;
     APP_LOG(APP_LOG_LEVEL_WARNING, "Universal TTS stalled: no audio packet for 30s");
     s_stream_end_received = true;
+    // A stalled stream may leave fewer than 800 ADPCM bytes in the ring.
+    // Without this end marker, the last partial PCM frame never decodes
+    // and the speaker can remain open indefinitely.
+    s_sentence_end_pending = s_buffer_count > 0;
     if (s_buffer_count && !s_speaker_open) start_playback();
     if (s_speaker_open && !s_buffer_count && !s_pcm_queued)
       schedule_close_timer();
