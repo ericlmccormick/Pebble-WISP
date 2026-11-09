@@ -134,6 +134,7 @@ int main(void){
   deliverTagged("AUDIO_CHUNK",360,"29108:2");
   assert(strcmp(last_reply_command,"AUDIO_WAIT")==0);
   assert(s_expected_sequence==1);
+  last_reply_command[0]=0; // A stale session must not generate a reply.
   deliverTagged("AUDIO_CHUNK",360,"11111:1");
   assert(last_reply_command[0]==0 && s_expected_sequence==1);
   deliverTagged("AUDIO_CHUNK",360,"29108:1");
