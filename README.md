@@ -1,5 +1,7 @@
 # WISP — Wrist Intelligence & Speech Portal
 
+> **Development preview — not yet publicly released.** The version in `package.json` is 2.2.5. Install test builds at your own risk; this README documents the development branch, not a published store release.
+
 WISP is a Pebble voice-assistant app that supports installed AI conversation agents, direct Gemini API (legacy), Universal TTS plugin speech, and direct Google Cloud TTS (legacy). It runs on Pebble Time 2 and other supported microphone-equipped Pebble platforms; spoken playback requires a speaker-capable watch.
 
 ## Restored audio architecture: 2.2.4
