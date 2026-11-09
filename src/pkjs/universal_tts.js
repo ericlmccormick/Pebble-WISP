@@ -41,6 +41,11 @@ module.exports={
         if(gen!==requestGeneration)return;
         streamEndDeliveryPending=false;
         conversationAudioFinalPending=false;
+        storage.setItem(PCM_DEBUG_STORAGE_KEY+'_TRANSPORT',JSON.stringify({
+          at:new Date().toISOString(),status:'complete',
+          acknowledged_bytes:acknowledgedAudioBytes,
+          packets:nextPacketSequence
+        }));
         if(onComplete)onComplete();
       }).catch(function(error){
         if(gen!==requestGeneration)return;
@@ -410,6 +415,7 @@ function startPluginTTSFetchLoop(gen){
 // when its ring has insufficient space; the sender retries without dropping
 // ADPCM or assuming a fixed Bluetooth speed.
 var transportId=0,nextPacketSequence=0,pendingPacket=null;
+var acknowledgedAudioBytes=0;
 var AUDIO_PACKET_BYTES=360,ACK_TIMEOUT_MS=1800,MAX_PACKET_ATTEMPTS=7;
 function abandonPendingPacket(){
   if(pendingPacket&&pendingPacket.timer)clearTimeout(pendingPacket.timer);
@@ -423,12 +429,18 @@ function sendReliablePacket(command,bytes,gen){
     var payload={COMMAND:command,TEXT:tag};
     if(bytes)payload.CHUNK=bytes;
     var transfer={tag:tag,gen:gen,timer:null,attempts:0,waits:0,
-      resolve:resolve,reject:reject};
+      byteCount:bytes?bytes.length:0,resolve:resolve,reject:reject};
     pendingPacket=transfer;
     function fail(error){
       if(pendingPacket!==transfer)return;
       if(transfer.timer)clearTimeout(transfer.timer);
       pendingPacket=null;
+      storage.setItem(PCM_DEBUG_STORAGE_KEY+'_TRANSPORT',JSON.stringify({
+        at:new Date().toISOString(),status:'failed',command:command,
+        sequence:nextPacketSequence,acknowledged_bytes:acknowledgedAudioBytes,
+        attempts:transfer.attempts,waits:transfer.waits,
+        reason:String(error&&error.message||error).slice(0,150)
+      }));
       reject(error);
     }
     function attempt(){
@@ -455,6 +467,7 @@ function sendReliablePacket(command,bytes,gen){
       if(pendingPacket!==transfer)return;
       if(transfer.timer)clearTimeout(transfer.timer);
       pendingPacket=null;
+      acknowledgedAudioBytes+=transfer.byteCount;
       nextPacketSequence++;
       resolve();
     };
@@ -552,7 +565,7 @@ function startBLESendLoop(){
       js_adpcm_valpred=0;js_adpcm_index=0;
       abandonPendingPacket();
       transportId=(Math.floor(Math.random()*2147483646)+1)>>>0;
-      nextPacketSequence=0;
+      nextPacketSequence=0;acknowledgedAudioBytes=0;
       lastAnswer=text;
       sentenceQueue=[];
       // TTS tts_prepare accepts up to 500 characters. Break up even long
@@ -582,7 +595,7 @@ function startBLESendLoop(){
       var stats={timestamp:new Date().toISOString()};
       String(payload.TEXT||'').split(',').forEach(function(pair){
         var kv=pair.split('=');
-        if(kv.length!==2||!/^(empty|empty_ms|partial|zero|peak|frames)$/.test(kv[0]))return;
+        if(kv.length!==2||!/^(empty|empty_ms|partial|zero|peak|frames|rx|wait|dup)$/.test(kv[0]))return;
         var n=Number(kv[1]);
         if(Number.isInteger(n)&&n>=0)stats[kv[0]]=n;
       });
