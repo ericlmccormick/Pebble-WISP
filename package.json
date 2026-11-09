@@ -1,0 +1,304 @@
+{
+  "author": "Eric McCormick",
+  "dependencies": {
+    "@rebble/clay": "^1.1.0"
+  },
+  "keywords": [],
+  "name": "wisp",
+  "pebble": {
+    "capabilities": [
+      "configurable"
+    ],
+    "displayName": "WISP",
+    "enableMultiJS": true,
+    "messageKeys": [
+      "COMMAND",
+      "TEXT",
+      "CHUNK",
+      "FONT_SIZE",
+      "VOLUME",
+      "STREAM_ID",
+      "SEQ",
+      "BUFFER_FREE",
+      "SENTENCE_TOTAL",
+      "BUFFER_HINT",
+      "AGENT_ICON",
+      "AGENT_NAME",
+      "APPEARANCE_MODE",
+      "SUNRISE",
+      "SUNSET",
+      "SPEAKER_CAPABLE"
+    ],
+    "projectType": "native",
+    "resources": {
+      "media": [
+        {
+          "file": "images/WISP_color_48.png",
+          "name": "IMAGE_WISP_LOGO",
+          "targetPlatforms": [
+            "emery"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/WISP_mono_48.png",
+          "name": "IMAGE_WISP_LOGO",
+          "targetPlatforms": [
+            "chalk",
+            "gabbro"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/WISP_color_48.png",
+          "name": "IMAGE_WISP_LOGO",
+          "targetPlatforms": [
+            "basalt"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/WISP_mono_48.png",
+          "name": "IMAGE_WISP_LOGO",
+          "targetPlatforms": [
+            "diorite",
+            "flint"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/WISP_menu_25.png",
+          "menuIcon": true,
+          "name": "logo25",
+          "targetPlatforms": null,
+          "type": "bitmap"
+        },
+        {
+          "file": "images/agent_wisp_color.png",
+          "name": "AGENT_WISP",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_wisp_mono.png",
+          "name": "AGENT_WISP",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_gemini_color.png",
+          "name": "AGENT_GEMINI",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_gemini_mono.png",
+          "name": "AGENT_GEMINI",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_openai_color.png",
+          "name": "AGENT_OPENAI",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_openai_mono.png",
+          "name": "AGENT_OPENAI",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_claude_color.png",
+          "name": "AGENT_CLAUDE",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_claude_mono.png",
+          "name": "AGENT_CLAUDE",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_grok_color.png",
+          "name": "AGENT_GROK",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_grok_mono.png",
+          "name": "AGENT_GROK",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_muse_color.png",
+          "name": "AGENT_MUSE",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_muse_mono.png",
+          "name": "AGENT_MUSE",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_openrouter_color.png",
+          "name": "AGENT_OPENROUTER",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_openrouter_mono.png",
+          "name": "AGENT_OPENROUTER",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        },
+        {
+          "file": "images/agent_deepseek_color.png",
+          "name": "AGENT_DEEPSEEK",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "basalt",
+            "emery"
+          ]
+        },
+        {
+          "file": "images/agent_deepseek_mono.png",
+          "name": "AGENT_DEEPSEEK",
+          "type": "bitmap",
+          "targetPlatforms": [
+            "chalk",
+            "diorite",
+            "flint",
+            "gabbro"
+          ]
+        }
+      ]
+    },
+    "sdkVersion": "3",
+    "targetPlatforms": [
+      "basalt",
+      "chalk",
+      "diorite",
+      "flint",
+      "emery",
+      "gabbro"
+    ],
+    "uuid": "426c68c7-bdd7-445a-860a-ea587a188993",
+    "watchapp": {
+      "watchface": false
+    },
+    "version": "2.1.6",
+    "manifestVersion": 2,
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "generativelanguage.googleapis.com",
+            "texttospeech.googleapis.com"
+          ]
+        }
+      },
+      "WatchMicrophone",
+      {
+        "name": "InvokeAction",
+        "plugin": "2c5edc42-b096-4f76-b284-1f27907e6501"
+      },
+      {
+        "name": "GoogleTtsSpeak",
+        "plugin": "2c5edc42-b096-4f76-b284-1f27907e6502"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "2c5edc42-b096-4f76-b284-1f27907e6502"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "3f97d5c5-bc28-48ba-b4af-e7ad7f6000f0"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "0d33014e-5d56-42ea-9665-3ebf182b4cfb"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "b8346592-cd59-4b83-9185-87d94e0734b0"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "80ee6780-856f-411f-954b-4553ba7f2af8"
+      },
+      {
+        "name": "GeminiRead",
+        "plugin": "2c5edc42-b096-4f76-b284-1f27907e6501"
+      },
+      {
+        "name": "Location",
+        "reason": "Read solar times from your selected weather provider for Auto appearance",
+        "required": false
+      }
+    ]
+  },
+  "version": "2.1.6"
+}

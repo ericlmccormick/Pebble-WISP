@@ -1,0 +1,107 @@
+name: Pebble native six-platform build
+
+on:
+  push:
+    branches: [main, gemini-reliability-review-2026-11-03, 'feature/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  native-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Pebble SDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nodejs npm libsdl2-2.0-0 libglib2.0-0 libpixman-1-0 zlib1g libsndio7.0
+      - name: Install Pebble CLI and current SDK
+        run: |
+          python -m pip install uv
+          uv tool install pebble-tool --python python3.12
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/pebble" sdk install latest
+      - name: Generate approved WISP color and monochrome icons
+        run: |
+          python -m pip install --disable-pip-version-check Pillow
+          python tools/generate_wisp_icons.py
+          python tools/generate_agent_icons.py
+          python tests/wisp_icon_test.py
+      - name: Build all target platforms
+        run: |
+          pebble build
+      - name: Check package contains six platform builds
+        run: |
+          python - <<'PY'
+          import glob, json, zipfile
+          with open('package.json') as f:
+              manifest=json.load(f)
+          expected={'basalt','chalk','diorite','flint','emery','gabbro'}
+          assert set(manifest['pebble']['targetPlatforms']) == expected
+          pbws=glob.glob('build/*.pbw')
+          assert pbws, 'No Pebble app package was created'
+          with zipfile.ZipFile(pbws[0]) as z:
+              names=z.namelist()
+              for platform in sorted(expected):
+                  assert any(platform in n for n in names), f'Missing {platform} binary in {pbws[0]}: {names}'
+          print('Built and packaged all six targets:', ', '.join(sorted(expected)))
+          PY
+      - name: Upload WISP Pebble PBW
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-watchapp-plugin-enabled-pbw
+          path: build/*.pbw
+          if-no-files-found: error
+      - name: Prepare direct-install watch app PBW
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/gemini-plugin-integration'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pebble-plugin-previews
+          cp build/*.pbw /tmp/pebble-plugin-previews/WISP_preview.pbw
+          unzip -t /tmp/pebble-plugin-previews/WISP_preview.pbw >/dev/null
+          cp branding/WISP_color_144.png branding/WISP_color_80.png branding/WISP_mono_144.png branding/WISP_mono_80.png /tmp/pebble-plugin-previews/
+          cp resources/images/WISP_menu_25.png /tmp/pebble-plugin-previews/
+          cp resources/images/agent_*_color.png resources/images/agent_*_mono.png /tmp/pebble-plugin-previews/
+      - name: Publish preview files without ZIPs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/gemini-plugin-integration'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The compiled PBW was copied to /tmp in the previous step.
+          # Remove ignored and untracked build products before checking out
+          # the download branch, which may contain historical build paths.
+          git clean -fdx >/dev/null
+          if git ls-remote --exit-code --heads origin builds/plugin-previews >/dev/null; then
+            git fetch origin builds/plugin-previews
+            git switch -C builds/plugin-previews origin/builds/plugin-previews
+          else
+            git switch --orphan builds/plugin-previews
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          # Keep this branch download-only; compiler products and node_modules
+          # can otherwise be swept up by an indiscriminate git add -A.
+          git rm -rf --ignore-unmatch build node_modules .lock-waf_linux_build package-lock.json >/dev/null 2>&1 || true
+          git rm -f --ignore-unmatch Gemini_Conversation_preview.pbw Google_Cloud_TTS_preview.pbw Gemini_with_Voice_plugin_preview.pbw
+          git clean -fdx >/dev/null
+          cp /tmp/pebble-plugin-previews/WISP_preview.pbw ./
+          cp /tmp/pebble-plugin-previews/WISP_color_144.png ./
+          cp /tmp/pebble-plugin-previews/WISP_color_80.png ./
+          cp /tmp/pebble-plugin-previews/WISP_mono_144.png ./
+          cp /tmp/pebble-plugin-previews/WISP_mono_80.png ./
+          cp /tmp/pebble-plugin-previews/WISP_menu_25.png ./
+          cp /tmp/pebble-plugin-previews/agent_*_color.png /tmp/pebble-plugin-previews/agent_*_mono.png ./
+          printf 'WISP (Wrist Intelligence & Speech Portal) watch app preview. Plugins are maintained in ericlmccormick/Pebble-Gemini-plugin and ericlmccormick/Pebble-Google-TTS-plugin.\n' > README.txt
+          git add -u
+          git add WISP_preview.pbw README.txt WISP_color_144.png WISP_color_80.png WISP_mono_144.png WISP_mono_80.png WISP_menu_25.png agent_*_color.png agent_*_mono.png
+          if ! git diff --cached --quiet; then
+            git commit -m "build: plugin previews from ${GITHUB_SHA}"
+            git push origin HEAD:builds/plugin-previews
+          fi
