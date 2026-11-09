@@ -1,0 +1,108 @@
+name: WISP initial-screen emulator screenshots
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/initial-screenshots.yml'
+      - 'src/c/main.c'
+      - 'package.json'
+      - 'tools/generate_wisp_icons.py'
+      - 'tools/generate_agent_icons.py'
+  workflow_dispatch:
+
+concurrency:
+  group: wisp-initial-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install headless emulator and Pebble SDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nodejs npm libsdl2-2.0-0 libglib2.0-0 libpixman-1-0 zlib1g libsndio7.0
+          python -m pip install uv Pillow
+          uv tool install pebble-tool --python python3.12
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/pebble" sdk install latest
+      - name: Regenerate the actual WISP icons and compile app
+        run: |
+          python tools/generate_wisp_icons.py
+          python tools/generate_agent_icons.py
+          pebble build
+      - name: Capture default WISP view before any AI provider is recognized
+        env:
+          SDL_VIDEODRIVER: dummy
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          for platform in basalt chalk diorite emery flint gabbro; do
+            echo "=== Capturing $platform ==="
+            # Headless QEMU runs with VNC and does not need an X server.
+            timeout 130 pebble install --emulator "$platform" --vnc
+            sleep 4
+            timeout 90 pebble screenshot --no-open --emulator "$platform" --vnc "screenshots/${platform}_initial.png"
+            python - "$platform" <<'PY'
+          import sys
+          from PIL import Image
+          platform=sys.argv[1]
+          im=Image.open(f'screenshots/{platform}_initial.png')
+          im.verify()
+          print('Screenshot valid:',platform,Image.open(f'screenshots/{platform}_initial.png').size)
+          PY
+          done
+      - name: Verify screenshots are real RGB/RGBA app renders
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          import os
+          names=['basalt','chalk','diorite','emery','flint','gabbro']
+          dims={'basalt':(144,168),'chalk':(180,180),'diorite':(144,168),
+                'emery':(200,228),'flint':(144,168),'gabbro':(260,260)}
+          for name in names:
+              path=f'screenshots/{name}_initial.png'
+              im=Image.open(path).convert('RGB')
+              assert im.size==dims[name], (name,im.size,dims[name])
+              assert len(im.getcolors(im.width*im.height) or [])>1, 'Blank screenshot: '+name
+              print(name,im.size,os.path.getsize(path),'bytes')
+          PY
+      - name: Upload screenshot files (PNGs; no ZIP required for direct links)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-initial-screen-shots
+          path: screenshots/*.png
+          if-no-files-found: error
+      - name: Publish individual PNG files directly to screenshot branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wisp-initial-images
+          cp screenshots/*_initial.png /tmp/wisp-initial-images/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git clean -fdx >/dev/null
+          if git ls-remote --exit-code --heads origin builds/screenshots >/dev/null; then
+            git fetch origin builds/screenshots
+            git switch -C builds/screenshots origin/builds/screenshots
+          else
+            git switch --orphan builds/screenshots
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          git clean -fdx >/dev/null
+          cp /tmp/wisp-initial-images/*_initial.png ./
+          printf 'WISP 2.2.5 generic pre-provider initial screen from six Pebble emulators. Source commit: %s\n' "$GITHUB_SHA" > README.txt
+          git add *_initial.png README.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "screenshots: WISP initial screen from ${GITHUB_SHA}"
+            git push origin HEAD:builds/screenshots
+          fi
