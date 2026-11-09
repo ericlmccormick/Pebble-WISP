@@ -24,11 +24,15 @@ assert.ok(legacy.fnv(canonical)>0);
 assert.throws(()=>legacy.canonicalWav('not a WAV'),/WAV|base64/);
 const actions=[],messages=[];
 let voice='en-US-Neural2-F',key='old-app-stored-google-key',fallbackVoice=null;
-let currentResolve,currentReject;
+let currentResolve,currentReject,activeClient=null;
 const done=()=>new Promise((resolve,reject)=>{currentResolve=resolve;currentReject=reject;});
 let requests=0;
 const Pebble={
-  sendAppMessage:(message,success)=>{messages.push(message);if(success)success();}
+  sendAppMessage:(message,success)=>{
+    messages.push(message);if(success)success();
+    if(activeClient&&message.TEXT&&/^(AUDIO_CHUNK|AUDIO_SENTENCE_END|AUDIO_STREAM_END)$/.test(message.COMMAND))
+      setImmediate(()=>activeClient.handleMessage({COMMAND:'AUDIO_ACK',TEXT:message.TEXT}));
+  }
 };
 const synthFetch=async(url,options)=>{
   assert.ok(url.startsWith('https://texttospeech.googleapis.com/v1/text:synthesize?key='));
@@ -45,7 +49,7 @@ const synthFetch=async(url,options)=>{
 const memory=new Map();
 const storage={getItem:key=>memory.get(key)||null,
   setItem:(key,value)=>memory.set(key,String(value))};
-const tts=legacy.create({
+const tts=activeClient=legacy.create({
   Pebble,UniversalTts,fetch:synthFetch,storage,
   getKey:()=>key,getVoice:()=>voice,
   saveVoice:value=>{fallbackVoice=value;voice=value;},
@@ -88,7 +92,7 @@ const tts=legacy.create({
   key='old-app-stored-google-key';
   voice='en-US-Neural2-F';
   let invalid=true;
-  const fallback=legacy.create({
+  const fallback=activeClient=legacy.create({
     Pebble,UniversalTts,getKey:()=>key,getVoice:()=>voice,
     saveVoice:value=>{fallbackVoice=value;voice=value;},
     fetch:async(url,options)=>{
