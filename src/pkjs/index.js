@@ -21,7 +21,7 @@ var ttsApiKey = localStorage.getItem("TTS_API_KEY") || "";
 var geminiBackend=useStoredBackend('GEMINI_BACKEND',!!geminiApiKey);
 if(geminiBackend==='plugin'){geminiBackend=AgentPlugins.agentId();localStorage.setItem('GEMINI_BACKEND',geminiBackend);}
 // Migrate old speech preference once: false means None. Fresh installs
-// default to the Google Cloud TTS plugin, including when no key exists.
+// default to Universal TTS (same plugin UUID), including when no key exists.
 function migrateSpeechProvider(){
   var provider=localStorage.getItem('TTS_BACKEND');
   var previousToggle=localStorage.getItem('ENABLE_TTS');
@@ -237,7 +237,7 @@ function apiErrorMessage(error, service) {
   var message = String(error && error.message || error || '').toLowerCase();
   if (message.indexOf('timed out') >= 0) return service + ' timed out. Try again.';
   if (/plugin unavailable|plugin support|install\/configure plugin|plugin.*permission|unknown plugin/.test(message))
-    return 'Install/configure the '+(service==='Gemini'?'AI Conversation':'Google TTS')+' plugin and grant permissions.';
+    return 'Install/configure the '+(service==='Gemini'?'AI Conversation':'Universal TTS')+' plugin and grant permissions.';
   if (/api.key|permission.denied|unauthenticated|401|403/.test(message)) return service + ' key/access error. Check settings.';
   if (/quota|rate.limit|resource.exhausted|429/.test(message)) return service + ' usage limit reached. Try later.';
   if (message.indexOf('voice') >= 0) return 'Voice unavailable. Select WaveNet F.';
@@ -321,7 +321,7 @@ if(true){
     description:'None disables speech. Plugin uses its own key and voice; direct mode uses the legacy settings below.',
     options:[
       {label:'None — text only',value:'none'},
-      {label:'Google Cloud TTS plugin (recommended)',value:'plugin'},
+      {label:'Universal TTS plugin (recommended)',value:'plugin'},
       {label:'Direct Google Cloud TTS (legacy)',value:'direct'}
     ]
   });
@@ -336,7 +336,7 @@ if(true){
   apiKeysItems.push({
     type:'select',messageKey:'TTS_VOICE',label:'TTS voice (direct mode only)',
     defaultValue:ttsVoice,
-    description:'In plugin mode, voice and pricing are managed by the Google Cloud TTS plugin.',
+    description:'In plugin mode, provider, voice and pricing are configured in Universal TTS.',
     options:[
       {label:'WaveNet F · $',value:'en-US-Wavenet-F'},
       {label:'WaveNet C · $',value:'en-US-Wavenet-C'},
@@ -975,7 +975,7 @@ function startTTSFetchLoop(generation, streamId) {
     }).catch(function(error){
       if(generation!==requestGeneration)return;
       var detail=String(error&&error.message||error);
-      console.log('Google TTS plugin audio failed:',detail);
+      console.log('Universal TTS plugin audio failed:',detail);
       cancelCurrentAudio();
       Pebble.sendAppMessage({COMMAND:'AUDIO_ERROR',STREAM_ID:streamId,TEXT:detail.substring(0,95)});
     });
