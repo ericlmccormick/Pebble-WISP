@@ -2,9 +2,13 @@ name: Pebble native six-platform build
 
 on:
   push:
-    branches: [main, gemini-reliability-review-2026-11-03, 'feature/**']
+    branches: [main, 'feature/**']
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: wisp-build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -60,17 +64,17 @@ jobs:
           path: build/*.pbw
           if-no-files-found: error
       - name: Prepare direct-install watch app PBW
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/gemini-plugin-integration'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
-          mkdir -p /tmp/pebble-plugin-previews
-          cp build/*.pbw /tmp/pebble-plugin-previews/WISP_preview.pbw
-          unzip -t /tmp/pebble-plugin-previews/WISP_preview.pbw >/dev/null
-          cp branding/WISP_color_144.png branding/WISP_color_80.png branding/WISP_mono_144.png branding/WISP_mono_80.png /tmp/pebble-plugin-previews/
-          cp resources/images/WISP_menu_25.png /tmp/pebble-plugin-previews/
-          cp resources/images/agent_*_color.png resources/images/agent_*_mono.png /tmp/pebble-plugin-previews/
+          mkdir -p /tmp/pebble-wisp-previews
+          cp build/*.pbw /tmp/pebble-wisp-previews/WISP_preview.pbw
+          unzip -t /tmp/pebble-wisp-previews/WISP_preview.pbw >/dev/null
+          cp branding/WISP_color_144.png branding/WISP_color_80.png branding/WISP_mono_144.png branding/WISP_mono_80.png /tmp/pebble-wisp-previews/
+          cp resources/images/WISP_menu_25.png /tmp/pebble-wisp-previews/
+          cp resources/images/agent_*_color.png resources/images/agent_*_mono.png /tmp/pebble-wisp-previews/
       - name: Publish preview files without ZIPs
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/gemini-plugin-integration'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -79,11 +83,11 @@ jobs:
           # Remove ignored and untracked build products before checking out
           # the download branch, which may contain historical build paths.
           git clean -fdx >/dev/null
-          if git ls-remote --exit-code --heads origin builds/plugin-previews >/dev/null; then
-            git fetch origin builds/plugin-previews
-            git switch -C builds/plugin-previews origin/builds/plugin-previews
+          if git ls-remote --exit-code --heads origin builds/previews >/dev/null; then
+            git fetch origin builds/previews
+            git switch -C builds/previews origin/builds/previews
           else
-            git switch --orphan builds/plugin-previews
+            git switch --orphan builds/previews
             git rm -rf . >/dev/null 2>&1 || true
           fi
           # Keep this branch download-only; compiler products and node_modules
@@ -91,17 +95,17 @@ jobs:
           git rm -rf --ignore-unmatch build node_modules .lock-waf_linux_build package-lock.json >/dev/null 2>&1 || true
           git rm -f --ignore-unmatch Gemini_Conversation_preview.pbw Google_Cloud_TTS_preview.pbw Gemini_with_Voice_plugin_preview.pbw
           git clean -fdx >/dev/null
-          cp /tmp/pebble-plugin-previews/WISP_preview.pbw ./
-          cp /tmp/pebble-plugin-previews/WISP_color_144.png ./
-          cp /tmp/pebble-plugin-previews/WISP_color_80.png ./
-          cp /tmp/pebble-plugin-previews/WISP_mono_144.png ./
-          cp /tmp/pebble-plugin-previews/WISP_mono_80.png ./
-          cp /tmp/pebble-plugin-previews/WISP_menu_25.png ./
-          cp /tmp/pebble-plugin-previews/agent_*_color.png /tmp/pebble-plugin-previews/agent_*_mono.png ./
+          cp /tmp/pebble-wisp-previews/WISP_preview.pbw ./
+          cp /tmp/pebble-wisp-previews/WISP_color_144.png ./
+          cp /tmp/pebble-wisp-previews/WISP_color_80.png ./
+          cp /tmp/pebble-wisp-previews/WISP_mono_144.png ./
+          cp /tmp/pebble-wisp-previews/WISP_mono_80.png ./
+          cp /tmp/pebble-wisp-previews/WISP_menu_25.png ./
+          cp /tmp/pebble-wisp-previews/agent_*_color.png /tmp/pebble-wisp-previews/agent_*_mono.png ./
           printf 'WISP (Wrist Intelligence & Speech Portal) watch app preview. Plugins are maintained in ericlmccormick/Pebble-Gemini-plugin and ericlmccormick/Pebble-Google-TTS-plugin.\n' > README.txt
           git add -u
           git add WISP_preview.pbw README.txt WISP_color_144.png WISP_color_80.png WISP_mono_144.png WISP_mono_80.png WISP_menu_25.png agent_*_color.png agent_*_mono.png
           if ! git diff --cached --quiet; then
             git commit -m "build: plugin previews from ${GITHUB_SHA}"
-            git push origin HEAD:builds/plugin-previews
+            git push origin HEAD:builds/previews
           fi
