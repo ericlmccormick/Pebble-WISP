@@ -4,8 +4,8 @@
 
 var Clay = require('@rebble/clay');
 var GEMINI_PLUGIN_UUID='2c5edc42-b096-4f76-b284-1f27907e6501';
-var GOOGLE_TTS_PLUGIN_UUID='2c5edc42-b096-4f76-b284-1f27907e6502';
-var GoogleTtsStream=require('./google_tts_stream');
+var UNIVERSAL_TTS_PLUGIN_UUID='2c5edc42-b096-4f76-b284-1f27907e6502';
+var UniversalTts=require('./universal_tts');
 var AgentPlugins=require('./agent_plugins');
 function useStoredBackend(key,hasLegacyKey){return localStorage.getItem(key)||(hasLegacyKey?'direct':'plugin');}
 
@@ -15,19 +15,19 @@ function useStoredBackend(key,hasLegacyKey){return localStorage.getItem(key)||(h
 // =========================================================================
 
 var geminiApiKey = localStorage.getItem("GEMINI_API_KEY") || ""; 
-var ttsApiKey = localStorage.getItem("TTS_API_KEY") || "";
 var geminiBackend=useStoredBackend('GEMINI_BACKEND',!!geminiApiKey);
 if(geminiBackend==='plugin'){geminiBackend=AgentPlugins.agentId();localStorage.setItem('GEMINI_BACKEND',geminiBackend);}
-// Migrate old speech preference once: false means None. Fresh installs
-// default to the Google Cloud TTS plugin, including when no key exists.
+// Preserve the old explicit opt-out, but move Google direct speech to
+// Universal TTS. Provider, credentials and voices now live in the plugin.
 function migrateSpeechProvider(){
   var provider=localStorage.getItem('TTS_BACKEND');
-  var previousToggle=localStorage.getItem('ENABLE_TTS');
-  var migrated=localStorage.getItem('TTS_PROVIDER_MIGRATED_V2')==='true';
-  if(!migrated && previousToggle==='false')provider='none';
-  if(provider!=='none'&&provider!=='plugin'&&provider!=='direct')provider=ttsApiKey?'direct':'plugin';
+  var oldToggle=localStorage.getItem('ENABLE_TTS');
+  if(localStorage.getItem('TTS_PROVIDER_MIGRATED_V2')!=='true'&&oldToggle==='false')provider='none';
+  provider=provider==='none'?'none':'plugin';
   localStorage.setItem('TTS_BACKEND',provider);
   localStorage.setItem('TTS_PROVIDER_MIGRATED_V2','true');
+  localStorage.removeItem('TTS_API_KEY');
+  localStorage.removeItem('TTS_VOICE');
   return provider;
 }
 var ttsBackend=migrateSpeechProvider();
@@ -95,30 +95,7 @@ var customPersona = localStorage.getItem("CUSTOM_PERSONA") || "";
 
 // Restore dynamic dropdown configurations with updated default
 var geminiModel = localStorage.getItem("GEMINI_MODEL") || "gemini-3.8-flash"; 
-// Migrate legacy Chirp3 aliases, which never existed in Google's TTS catalog.
-var ttsVoice = localStorage.getItem("TTS_VOICE") || "en-US-Wavenet-F";
-var TTS_VOICE_ALIASES = {
-  "en-US-Chirp3-HD-F": "en-US-Chirp3-HD-Kore",
-  "en-US-Chirp3-HD-M": "en-US-Chirp3-HD-Charon",
-  "en-US-Studio-O": "en-US-Wavenet-F",
-  "en-US-Studio-M": "en-US-Wavenet-D",
-  "en-US-Journey-F": "en-US-Wavenet-F",
-  "en-US-Journey-D": "en-US-Wavenet-D"
-};
-var SUPPORTED_TTS_VOICES = [
-  "en-US-Wavenet-C", "en-US-Wavenet-D", "en-US-Wavenet-F",
-  "en-US-Neural2-C", "en-US-Neural2-D", "en-US-Neural2-F",
-  "en-US-Chirp3-HD-Kore", "en-US-Chirp3-HD-Aoede",
-  "en-US-Chirp3-HD-Leda", "en-US-Chirp3-HD-Zephyr",
-  "en-US-Chirp3-HD-Charon", "en-US-Chirp3-HD-Puck"
-];
-function normalizeTtsVoice(name) {
-  var migrated = TTS_VOICE_ALIASES[name] || name;
-  return SUPPORTED_TTS_VOICES.indexOf(migrated) >= 0 ? migrated : "en-US-Wavenet-F";
-}
-ttsVoice = normalizeTtsVoice(ttsVoice);
-localStorage.setItem("TTS_VOICE", ttsVoice);        
-
+// Universal TTS owns all voice and model settings.
 // The TTS_BACKEND setting alone determines whether speech is enabled.
 
 // =========================================================================
@@ -129,7 +106,6 @@ var conversationHistory = [];
 var MAX_HISTORY_MESSAGES = 6;
 var MAX_HISTORY_CHARACTERS = 8000;
 var GEMINI_TIMEOUT_MS = 30000;
-var TTS_TIMEOUT_MS = 20000;
 function trimConversationHistory(items) {
   if (!Array.isArray(items)) return [];
   var pairs = [];
@@ -193,19 +169,7 @@ detectSpeakerFromInfo();
 // SECTION 5: STREAMING ARCHITECTURE QUEUE STATE
 // =========================================================================
 
-var sentenceQueue = [];    
-var readyAudioQueue = [];  
-var isFetchingTTS = false; 
-var isSendingBLE = false;
-var requestGeneration = 0;
-var MAX_BLE_RETRIES = 5;
-var nextStreamId = (Date.now() & 0x7fffffff) || 1;
-var activeTransfer = null;
-var streamEndSent = false;
-var AUDIO_PACKET_BYTES = 360; // Leaves room for command/session/sequence tuples.
-var ACK_TIMEOUT_MS = 1800;
-var rateBytesPerSecond = 5200; // Conservative initial link estimate.
-var lastAckTime = 0;
+var requestGeneration=0;
 function requestJsonWithTimeout(url, options, timeoutMs) {
   return new Promise(function(resolve, reject) {
     var done = false;
@@ -235,39 +199,24 @@ function apiErrorMessage(error, service) {
   var message = String(error && error.message || error || '').toLowerCase();
   if (message.indexOf('timed out') >= 0) return service + ' timed out. Try again.';
   if (/plugin unavailable|plugin support|install\/configure plugin|plugin.*permission|unknown plugin/.test(message))
-    return 'Install/configure the '+(service==='Gemini'?'AI Conversation':'Google TTS')+' plugin and grant permissions.';
+    return 'Install/configure the '+(service==='Gemini'?'AI Conversation':'Universal TTS')+' plugin and grant permissions.';
   if (/api.key|permission.denied|unauthenticated|401|403/.test(message)) return service + ' key/access error. Check settings.';
   if (/quota|rate.limit|resource.exhausted|429/.test(message)) return service + ' usage limit reached. Try later.';
-  if (message.indexOf('voice') >= 0) return 'Voice unavailable. Select WaveNet F.';
+  if (message.indexOf('voice') >= 0) return 'Voice unavailable. Configure Universal TTS.';
   return service + ' request failed. Check connection.';
 }
   
 
-var js_adpcm_valpred = 0;  
-var js_adpcm_index = 0;
-var googleTtsStream=GoogleTtsStream.create({Pebble:Pebble,pluginId:GOOGLE_TTS_PLUGIN_UUID,encodeADPCM:encodeADPCM});
-
-
-// =========================================================================
-// SECTION 6: ADPCM SIGNAL DICTIONARY TABLES
-// =========================================================================
-
-var stepTable = [
-  7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,
-  34,37,41,45,50,55,60,66,73,80,88,97,107,118,
-  130,143,157,173,190,209,230,253,279,307,337,
-  371,408,449,494,544,598,658,724,796,876,963,
-  1060,1166,1282,1411,1552,1707,1878,2066,2272,
-  2499,2749,3024,3327,3660,4026,4428,4871,5358,
-  5894,6484,7132,7845,8630,9493,10442,11487,
-  12635,13899,15289,16818,18500,20350,22385,
-  24623,27086,29794,32767
-];
-
-var indexTable = [
-  -1,-1,-1,-1,2,4,6,8,
-  -1,-1,-1,-1,2,4,6,8
-];
+var universalTts=UniversalTts.create({
+  Pebble:Pebble,
+  pluginId:UNIVERSAL_TTS_PLUGIN_UUID,
+  storage:localStorage,
+  onError:function(error){
+    console.log('Universal TTS failed:',String(error&&error.message||error));
+    Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
+  },
+  onComplete:function(){console.log('Universal TTS transfer complete');}
+});
 
 // =========================================================================
 // SECTION 7: DYNAMIC MENU CONFIGURATION TREE
@@ -310,47 +259,16 @@ var apiKeysItems = [
     ]
   }
 ];
-if(true){
-  // Expose speech settings even if watch metadata arrives late; the watch
-  // capability handshake controls actual playback, not the Clay layout.
-  apiKeysItems.push({
-    type:'select',messageKey:'TTS_BACKEND',label:'Speech provider',
-    defaultValue:ttsBackend,
-    description:'None disables speech. Plugin uses its own key and voice; direct mode uses the legacy settings below.',
-    options:[
-      {label:'None — text only',value:'none'},
-      {label:'Google Cloud TTS plugin (recommended)',value:'plugin'},
-      {label:'Direct Google Cloud TTS (legacy)',value:'direct'}
-    ]
-  });
-  apiKeysItems.push({
-    type:'input',messageKey:'TTS_API_KEY',label:'Cloud TTS key (direct mode only)',
-    description:ttsApiKey?'Direct key already saved locally. Leave blank to keep it.':'Required only when using Direct Cloud TTS.',
-    attributes:{
-      type:'password',autocorrect:'off',autocapitalize:'off',
-      placeholder:ttsApiKey?'Existing direct key saved':'Paste Google Cloud TTS API key'
-    }
-  });
-  apiKeysItems.push({
-    type:'select',messageKey:'TTS_VOICE',label:'TTS voice (direct mode only)',
-    defaultValue:ttsVoice,
-    description:'In plugin mode, voice and pricing are managed by the Google Cloud TTS plugin.',
-    options:[
-      {label:'WaveNet F · $',value:'en-US-Wavenet-F'},
-      {label:'WaveNet C · $',value:'en-US-Wavenet-C'},
-      {label:'WaveNet D · $',value:'en-US-Wavenet-D'},
-      {label:'Neural2 F · $$',value:'en-US-Neural2-F'},
-      {label:'Neural2 C · $$',value:'en-US-Neural2-C'},
-      {label:'Neural2 D · $$',value:'en-US-Neural2-D'},
-      {label:'Chirp 3 HD Kore · $$$',value:'en-US-Chirp3-HD-Kore'},
-      {label:'Chirp 3 HD Aoede · $$$',value:'en-US-Chirp3-HD-Aoede'},
-      {label:'Chirp 3 HD Leda · $$$',value:'en-US-Chirp3-HD-Leda'},
-      {label:'Chirp 3 HD Zephyr · $$$',value:'en-US-Chirp3-HD-Zephyr'},
-      {label:'Chirp 3 HD Charon · $$$',value:'en-US-Chirp3-HD-Charon'},
-      {label:'Chirp 3 HD Puck · $$$',value:'en-US-Chirp3-HD-Puck'}
-    ]
-  });
-}
+// One universal voice plugin; it owns the voice, provider and API key.
+apiKeysItems.push({
+  type:'select',messageKey:'TTS_BACKEND',label:'Spoken responses',
+  defaultValue:ttsBackend,
+  description:'Configure the speech service, voice, and key in Universal TTS.',
+  options:[
+    {label:'Universal TTS plugin (recommended)',value:'plugin'},
+    {label:'None — text only',value:'none'}
+  ]
+});
 
 var clayConfig = [
   { "type": "heading", "defaultValue": "WISP — Wrist Intelligence & Speech Portal" }, 
@@ -443,17 +361,14 @@ function customClay() {
 
   function updateVisibility() {
     var geminiLegacy = String(fieldValue('GEMINI_BACKEND', 'plugin')) === 'direct';
-    var ttsLegacy = String(fieldValue('TTS_BACKEND', 'plugin')) === 'direct';
 
     // Plugin-owned keys, model and voice must be configured in their plugins.
     fieldVisible('GEMINI_API_KEY', geminiLegacy);
     fieldVisible('GEMINI_MODEL', geminiLegacy);
-    fieldVisible('TTS_API_KEY', ttsLegacy);
-    fieldVisible('TTS_VOICE', ttsLegacy);
   }
 
   page.on(page.EVENTS.AFTER_BUILD, function() {
-    ['GEMINI_BACKEND', 'TTS_BACKEND'].forEach(function(key) {
+    ['GEMINI_BACKEND'].forEach(function(key) {
       var field = page.getItemByMessageKey(key);
       if (field) field.on('change', updateVisibility);
     });
@@ -466,66 +381,7 @@ var clay = new Clay(clayConfig, customClay, {
   autoHandleEvents: false 
 });
 
-// =========================================================================
-// SECTION 9: ADPCM COMPRESSION MATRIX ALGORITHMS
-// =========================================================================
-
-function encodeADPCM(pcm16) {
-  var adpcm = [];     
-  var buffer = 0;     
-  var toggle = false; 
-
-  for (var i = 0; i < pcm16.length; i++) {
-    var diff = pcm16[i] - js_adpcm_valpred; 
-    var sign = (diff < 0) ? 8 : 0;          
-    if (sign) diff = -diff;                 
-
-    var step = stepTable[js_adpcm_index];   
-    var delta = 0;                          
-    var vpdiff = (step >> 3);               
-
-    if (diff >= step) { delta |= 4; diff -= step; vpdiff += step; }
-    step >>= 1;
-    if (diff >= step) { delta |= 2; diff -= step; vpdiff += step; }
-    step >>= 1;
-    if (diff >= step) { delta |= 1; vpdiff += step; }
-
-    if (sign) { js_adpcm_valpred -= vpdiff; } 
-    else { js_adpcm_valpred += vpdiff; }
-
-    if (js_adpcm_valpred > 32767) js_adpcm_valpred = 32767;     
-    if (js_adpcm_valpred < -32768) js_adpcm_valpred = -32768;   
-
-    delta |= sign;                             
-    js_adpcm_index += indexTable[delta];       
-
-    if (js_adpcm_index < 0) js_adpcm_index = 0;   
-    if (js_adpcm_index > 88) js_adpcm_index = 88; 
-
-    if (toggle) {
-      buffer |= (delta & 0x0F);   
-      adpcm.push(buffer);         
-      toggle = false;             
-    } else {
-      buffer = (delta & 0x0F) << 4; 
-      toggle = true;              
-    }
-  }
-
-  if (toggle) { adpcm.push(buffer); } 
-  return adpcm;
-}
-
-function lowPassFilter(samples) {
-  if (samples.length < 3) return samples.slice();
-  var filtered = [];
-  filtered[0] = samples[0];
-  filtered[1] = samples[1]; 
-  for (var i = 2; i < samples.length; i++) {
-    filtered[i] = (samples[i] + samples[i - 1] + samples[i - 2]) / 3;
-  }
-  return filtered;
-}
+// Universal TTS SDK handles all ADPCM compression and BLE audio transport.
 
 // =========================================================================
 // SECTION 10: OS INFRASTRUCTURE EVENT SUB-SYSTEM
@@ -553,7 +409,6 @@ Pebble.addEventListener('showConfiguration', function() {
     GEMINI_BACKEND: geminiBackend,
     TTS_BACKEND: ttsBackend,
     GEMINI_MODEL: geminiModel,
-    TTS_VOICE: ttsVoice,
     APPEARANCE_MODE: appearanceMode
   });
   Pebble.openURL(clay.generateUrl());
@@ -581,7 +436,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
   }
   if(settings.TTS_BACKEND){
     var selectedSpeechProvider=settings.TTS_BACKEND.value;
-    ttsBackend=selectedSpeechProvider==='none'||selectedSpeechProvider==='direct'?selectedSpeechProvider:'plugin';
+    ttsBackend=selectedSpeechProvider==='none'?'none':'plugin';
     localStorage.setItem('TTS_BACKEND',ttsBackend);
   }
   if (settings.CUSTOM_PERSONA) {
@@ -594,23 +449,10 @@ Pebble.addEventListener('webviewclosed', function(e) {
     localStorage.setItem("GEMINI_API_KEY", geminiApiKey); 
   }
 
-  // An intentionally blank Clay field must not erase a previously saved key.
-  if (ttsBackend==='direct' && settings.TTS_API_KEY && settings.TTS_API_KEY.value) {
-    ttsApiKey = settings.TTS_API_KEY.value;
-    localStorage.setItem("TTS_API_KEY", ttsApiKey);
-  }
-
   if (geminiBackend==='direct' && settings.GEMINI_MODEL) {
     geminiModel = settings.GEMINI_MODEL.value || "gemini-3.8-flash"; 
     localStorage.setItem("GEMINI_MODEL", geminiModel); 
   }
-
-  if (ttsBackend==='direct' && settings.TTS_VOICE) {
-    ttsVoice = normalizeTtsVoice(settings.TTS_VOICE.value || "en-US-Wavenet-F"); 
-    localStorage.setItem("TTS_VOICE", ttsVoice); 
-  }
-
-
 
   if (settings.APPEARANCE_MODE) {
     var selectedMode=String(settings.APPEARANCE_MODE.value || 'auto');
@@ -712,22 +554,14 @@ Pebble.addEventListener('ready', function() {
 });
 
 Pebble.addEventListener('appmessage', function(e) {
-  var dict = e.payload;
+  var dict = e.payload || {};
+  if(universalTts.handleMessage(dict))return;
   if (dict.COMMAND === 'WATCH_STATUS') {
     hasSpeaker = Number(dict.SPEAKER_CAPABLE) === 1;
     console.log('Watch reported speaker=',hasSpeaker,'volume=',dict.VOLUME,'TTS provider=',ttsBackend);
     refreshAgentInfo();
     return;
   } 
-
-  if (dict.COMMAND === 'AUDIO_ACK' || dict.COMMAND === 'AUDIO_WAIT') {
-    handleAudioAck(dict);
-    return;
-  }
-  if (dict.COMMAND === 'AUDIO_CANCEL') {
-    cancelCurrentAudio();
-    return;
-  }
 
   if (dict.COMMAND === 'DICTATION') {
     // The C app sends VOLUME only for builds with PBL_SPEAKER.
@@ -741,22 +575,15 @@ Pebble.addEventListener('appmessage', function(e) {
     console.log('Dictation audio capability:',hasSpeaker,'volume:',dict.VOLUME,'provider:',ttsBackend);
     refreshAgentInfo();
     if (!geminiApiKey) geminiApiKey = localStorage.getItem("GEMINI_API_KEY") || "";
-    if (ttsApiKey === null) ttsApiKey = localStorage.getItem("TTS_API_KEY") || "";
-
     // The plugins own credentials; direct requests retain their old keys.
     if (geminiBackend==='direct' && !geminiApiKey) {
       sendErrorToWatch("Missing Gemini Key. Check settings.");
       return;
     }
 
-    if (hasSpeaker && ttsBackend==='direct' && !ttsApiKey) {
-      sendErrorToWatch("Direct TTS selected but missing TTS Key.");
-      return;
-    }
-
     var skipAudio = false; 
-    if (!hasSpeaker || ttsBackend==='none' || (ttsBackend==='direct' && !ttsApiKey)) {
-      console.log('TTS skipped:',!hasSpeaker?'speaker not detected':ttsBackend==='none'?'speech provider disabled':'missing direct TTS credentials');
+    if (!hasSpeaker || ttsBackend==='none') {
+      console.log('TTS skipped:',!hasSpeaker?'speaker not detected':'speech disabled');
       skipAudio = true;
     } else if (dict.VOLUME !== undefined && dict.VOLUME === 0) {
       skipAudio = true;    
@@ -778,13 +605,6 @@ function sendErrorToWatch(msg) {
 function fetchGeminiResponse(prompt, skipAudio) {
   cancelCurrentAudio();
   var generation = requestGeneration;
-  var streamId = nextStreamId = ((nextStreamId + 1) & 0x7fffffff) || 1;
-  sentenceQueue = [];
-  readyAudioQueue = [];
-  isFetchingTTS = false;
-  isSendingBLE = false;
-  js_adpcm_valpred = 0;
-  js_adpcm_index = 0;
 
   var localTime = new Date().toLocaleString(); 
   var systemText = "You are a smartwatch voice assistant. Responses must be conversational and under 100 words. No markdown or bullet lists. Current local time: " + localTime + ".";
@@ -853,15 +673,15 @@ function fetchGeminiResponse(prompt, skipAudio) {
         displayText += replyText.charAt(i); bytes += size;
       }
       // Start audio only once the watch has accepted its new answer/session.
-      var textPayload = { 'COMMAND': cmd, 'TEXT': displayText, 'STREAM_ID': streamId };
+      var textPayload = {COMMAND:cmd,TEXT:displayText};
       function startAnswer() {
         if (generation !== requestGeneration || skipAudio) return;
-        console.log('Starting TTS',ttsBackend,'for response stream',streamId);
-        // Speak the SAME text we displayed, rather than relying on separate
-        // agent metadata or an unbounded full response.
-        var rawSentences = displayText.match(/[^.!?]+[.!?]*/g) || [displayText];
-        sentenceQueue = rawSentences.map(function(part) { return part.trim(); }).filter(function(part) { return part.length > 0; });
-        startTTSFetchLoop(generation, streamId);
+        console.log('Universal TTS speak request for displayed reply');
+        universalTts.speak(displayText).catch(function(error){
+          if(generation !== requestGeneration)return;
+          console.log('Universal TTS start failed:',String(error&&error.message||error));
+          Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
+        });
       }
       Pebble.sendAppMessage(textPayload, startAnswer, function(error) {
         if (generation !== requestGeneration) return;
@@ -883,279 +703,9 @@ function fetchGeminiResponse(prompt, skipAudio) {
 }
 
 // =========================================================================
-// SECTION 12: AUDIO PREPARATION (8-kHz WAV PCM16 -> IMA ADPCM)
+// SECTION 12: Shared Universal TTS lifecycle
 // =========================================================================
-
-function cancelCurrentAudio() {
+function cancelCurrentAudio(){
   requestGeneration++;
-  if (activeTransfer && activeTransfer.timer) clearTimeout(activeTransfer.timer);
-  activeTransfer = null;
-  streamEndSent = false;
-  currentAudioData = null;
-  currentAudioCursor = 0;
-  currentAudioSeq = 0;
-  lastAckTime = 0;
-  sentenceQueue = [];
-  readyAudioQueue = [];
-  isFetchingTTS = false;
-  isSendingBLE = false;
-  js_adpcm_valpred = 0;
-  js_adpcm_index = 0;
-}
-
-function pcmFromWav(base64) {
-  var wav = atob(base64);
-  if (wav.length < 44 || wav.substr(0, 4) !== 'RIFF' || wav.substr(8, 4) !== 'WAVE') throw Error('Invalid WAV');
-  function u16(p) { return wav.charCodeAt(p) | (wav.charCodeAt(p + 1) << 8); }
-  function u32(p) { return (wav.charCodeAt(p) | (wav.charCodeAt(p + 1) << 8) | (wav.charCodeAt(p + 2) << 16) | (wav.charCodeAt(p + 3) << 24)) >>> 0; }
-  var offset = 12, channels = 0, sampleRate = 0, bits = 0, format = 0, dataOffset = -1, dataLength = 0;
-  while (offset + 8 <= wav.length) {
-    var type = wav.substr(offset, 4), size = u32(offset + 4);
-    var end = offset + 8 + size;
-    if (end > wav.length) throw Error('Truncated WAV');
-    if (type === 'fmt ') {
-      if (size < 16) throw Error('Invalid WAV fmt');
-      format = u16(offset + 8); channels = u16(offset + 10);
-      sampleRate = u32(offset + 12); bits = u16(offset + 22);
-    } else if (type === 'data') {
-      dataOffset = offset + 8; dataLength = size;
-      break;
-    }
-    offset = end + (size & 1);
-  }
-  if (format !== 1 || channels !== 1 || bits !== 16 || sampleRate !== 8000 || dataOffset < 0) {
-    throw Error('Unsupported WAV PCM format');
-  }
-  var result = [];
-  for (var p = dataOffset; p + 1 < dataOffset + dataLength; p += 2) {
-    var value = u16(p);
-    result.push(value > 32767 ? value - 65536 : value);
-  }
-  if (!result.length) throw Error('Empty WAV');
-  return result;
-}
-
-function isInvalidVoiceError(error) {
-  var message = String(error && error.message || error || '').toLowerCase();
-  return message.indexOf('voice') >= 0 &&
-    (message.indexOf('does not exist') >= 0 ||
-     message.indexOf('not found') >= 0 ||
-     message.indexOf('invalid') >= 0 ||
-     message.indexOf('misspelled') >= 0);
-}
-
-function startTTSFetchLoop(generation, streamId) {
-  if (generation !== requestGeneration || isFetchingTTS || !sentenceQueue.length) return;
-  isFetchingTTS = true;
-  var sentence = sentenceQueue.shift();
-  if(ttsBackend==='plugin'){
-    // HA-compatible WAV chunks, transported through the existing Gemini
-    // watch ACK/SEQ protocol. Never use HA AUDIO_RESET on this watch.
-    googleTtsStream.stream(sentence,{
-      cancelled:function(){return generation!==requestGeneration;},
-      onChunk:function(bytes,last,total){
-        return new Promise(function(resolve,reject){
-          function queueWhenReady(){
-            if(generation!==requestGeneration){reject(Error('Cancelled'));return;}
-            if(readyAudioQueue.length>=6){setTimeout(queueWhenReady,35);return;}
-            readyAudioQueue.push({bytes:bytes,sentenceEnd:last,sentenceTotal:total});
-            if(!isSendingBLE)startBLESendLoop(generation,streamId);
-            resolve();
-          }
-          queueWhenReady();
-        });
-      }
-    }).then(function(){
-      if(generation!==requestGeneration)return;
-      isFetchingTTS=false;
-      startTTSFetchLoop(generation,streamId);
-      maybeFinishAudioStream(generation,streamId);
-    }).catch(function(error){
-      if(generation!==requestGeneration)return;
-      var detail=String(error&&error.message||error);
-      console.log('Google TTS plugin audio failed:',detail);
-      cancelCurrentAudio();
-      Pebble.sendAppMessage({COMMAND:'AUDIO_ERROR',STREAM_ID:streamId,TEXT:detail.substring(0,95)});
-    });
-    return;
-  }
-  var url = 'https://texttospeech.googleapis.com/v1/text:synthesize?key=' + ttsApiKey;
-  var primaryVoice = normalizeTtsVoice(ttsVoice);
-  var fallbackVoice = "en-US-Wavenet-F";
-
-  function synthesize(voiceName, fallbackAttempt) {
-    var audioConfig = { audioEncoding: 'LINEAR16', sampleRateHertz: 8000 };
-    // Chirp 3 HD does not support the standard speakingRate audioConfig field.
-    if (voiceName.indexOf('-Chirp3-HD-') < 0) audioConfig.speakingRate = 0.92;
-    return requestJsonWithTimeout(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        input: { text: sentence },
-        voice: { languageCode: 'en-US', name: voiceName },
-        audioConfig: audioConfig
-      })
-    }, TTS_TIMEOUT_MS).then(function(data) {
-      if (generation !== requestGeneration) return;
-      if (!data.audioContent) {
-        var apiError = new Error(data.error && data.error.message || 'No TTS audio');
-        if (!fallbackAttempt && voiceName !== fallbackVoice && isInvalidVoiceError(apiError)) {
-          console.log('Invalid selected voice; retrying with WaveNet-F');
-          ttsVoice = fallbackVoice;
-          localStorage.setItem("TTS_VOICE", fallbackVoice);
-          return synthesize(fallbackVoice, true);
-        }
-        throw apiError;
-      }
-      var pcm = pcmFromWav(data.audioContent);
-      if (generation !== requestGeneration) return;
-      readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
-      isFetchingTTS = false;
-      if (!isSendingBLE) startBLESendLoop(generation, streamId);
-      startTTSFetchLoop(generation, streamId);
-      maybeFinishAudioStream(generation, streamId);
-    });
-  }
-
-  synthesize(primaryVoice, false).catch(function(error) {
-    if (generation !== requestGeneration) return;
-    isFetchingTTS = false;
-    console.log('TTS failed:', apiErrorMessage(error, 'TTS'));
-    // Stop speech, but leave the successfully displayed answer intact.
-    cancelCurrentAudio();
-    Pebble.sendAppMessage({ COMMAND:'AUDIO_ERROR', STREAM_ID:streamId,
-      TEXT:apiErrorMessage(error,'TTS').substring(0,95) });
-  });
-}
-
-// =========================================================================
-// SECTION 13: STOP-AND-WAIT AUDIO DELIVERY WITH WATCH-LEVEL ACKNOWLEDGMENTS
-// =========================================================================
-
-// The watch reports bytes currently free in its playback ring. Transport
-// success alone does not acknowledge audio reception; only AUDIO_ACK does.
-function sendPendingPacket(transfer) {
-  if (transfer.generation !== requestGeneration || activeTransfer !== transfer) return;
-  if (transfer.timer) clearTimeout(transfer.timer);
-  transfer.attempts++;
-  if (transfer.attempts > MAX_BLE_RETRIES) {
-    console.log('Audio stopped: retry limit reached at packet ' + transfer.seq);
-    cancelCurrentAudio();
-    Pebble.sendAppMessage({ COMMAND:'AUDIO_ERROR', STREAM_ID:transfer.streamId });
-    return;
-  }
-  var payload = {
-    COMMAND: transfer.final ? 'AUDIO_STREAM_END' : (transfer.end ? 'AUDIO_SENTENCE_END' : 'AUDIO_CHUNK'),
-    STREAM_ID: transfer.streamId,
-    SEQ: transfer.seq
-  };
-  if (!transfer.end && !transfer.final) {
-    payload.CHUNK = transfer.chunk;
-    payload.SENTENCE_TOTAL = transfer.total;
-    payload.BUFFER_HINT = Math.round(rateBytesPerSecond);
-  }
-  Pebble.sendAppMessage(payload, function() {}, function(error) {
-    if (transfer.generation !== requestGeneration || activeTransfer !== transfer) return;
-    console.log('Transport retry', error);
-  });
-  transfer.timer = setTimeout(function() { sendPendingPacket(transfer); }, ACK_TIMEOUT_MS);
-}
-
-function handleAudioAck(dict) {
-  var t = activeTransfer;
-  if (!t || t.generation !== requestGeneration) return;
-  if (Number(dict.STREAM_ID) !== t.streamId || Number(dict.SEQ) !== t.seq) return;
-  if (t.timer) { clearTimeout(t.timer); t.timer = null; }
-  if (dict.COMMAND === 'AUDIO_WAIT') {
-    // Bound a hardware or connection fault that never frees its ring buffer.
-    t.waits = (t.waits || 0) + 1;
-    if (t.waits > 75) {
-      console.log('Audio buffer did not drain');
-      cancelCurrentAudio();
-      Pebble.sendAppMessage({ COMMAND:'AUDIO_ERROR', STREAM_ID:t.streamId });
-      return;
-    }
-    t.attempts = 0;
-    t.timer = setTimeout(function() { sendPendingPacket(t); }, 180);
-    return;
-  }
-  var now = Date.now();
-  if (lastAckTime && !t.end && !t.final && t.attempts === 1) {
-    var measured = t.chunk.length * 1000 / Math.max(30, now - lastAckTime);
-    rateBytesPerSecond = Math.max(1000, Math.min(12000, 0.8 * rateBytesPerSecond + 0.2 * measured));
-  }
-  lastAckTime = now;
-  activeTransfer = null;
-  if (t.final) {
-    currentAudioSeq++;
-    streamEndSent = true;
-    isSendingBLE = false;
-  } else if (t.end) {
-    currentAudioSeq++;
-    isSendingBLE = false;
-    startBLESendLoop(t.generation, t.streamId);
-  } else {
-    currentAudioCursor += t.chunk.length;
-    currentAudioSeq++;
-    dispatchNextAudio(t.generation, t.streamId);
-  }
-}
-
-var currentAudioData = null;
-var currentAudioCursor = 0;
-var currentAudioSeq = 0;
-var currentAudioEndSentence=true;
-var currentAudioSentenceTotal=0;
-
-function maybeFinishAudioStream(generation, streamId) {
-  if (generation !== requestGeneration || streamEndSent || activeTransfer ||
-      isSendingBLE || isFetchingTTS || sentenceQueue.length || readyAudioQueue.length) return;
-  // Explicit final marker: a sentence end is NOT the end of the response.
-  // Keep the speaker active while synthesizing/streaming later sentences.
-  isSendingBLE = true;
-  activeTransfer = {
-    generation: generation, streamId: streamId,
-    seq: currentAudioSeq, chunk: null, end: false, final: true,
-    attempts: 0, timer: null
-  };
-  sendPendingPacket(activeTransfer);
-}
-
-function startBLESendLoop(generation, streamId) {
-  if (generation !== requestGeneration || isSendingBLE) return;
-  if (!readyAudioQueue.length) {
-    maybeFinishAudioStream(generation, streamId);
-    return;
-  }
-  isSendingBLE = true;
-  lastAckTime = 0; // Do not mistake a gap between TTS sentences for slow BLE.
-  var segment=readyAudioQueue.shift();
-  currentAudioData=Array.isArray(segment)?segment:segment.bytes;
-  currentAudioEndSentence=Array.isArray(segment)||segment.sentenceEnd===true;
-  currentAudioSentenceTotal=Array.isArray(segment)?currentAudioData.length:segment.sentenceTotal;
-  currentAudioCursor = 0;
-  dispatchNextAudio(generation, streamId);
-}
-
-function dispatchNextAudio(generation, streamId) {
-  if (generation !== requestGeneration || activeTransfer || !isSendingBLE) return;
-  var remaining = currentAudioData.length - currentAudioCursor;
-  var segmentEnded=remaining<=0;
-  if(segmentEnded && !currentAudioEndSentence){
-    // A 6000-byte verified WAV transport segment is NOT a sentence end.
-    isSendingBLE=false;
-    startBLESendLoop(generation,streamId);
-    return;
-  }
-  var isEnd=segmentEnded;
-  var chunk = isEnd ? null : currentAudioData.slice(currentAudioCursor, currentAudioCursor + AUDIO_PACKET_BYTES);
-  activeTransfer = {
-    generation: generation, streamId: streamId,
-    seq: currentAudioSeq, chunk: chunk, end: isEnd, final: false, total: currentAudioSentenceTotal,
-    attempts: 0, timer: null
-  };
-  // DATA packets tell the watch this sentence's total bytes; it can avoid
-  // starting a short sentence until every byte has arrived.
-  if (!isEnd) activeTransfer.total = currentAudioSentenceTotal;
-  sendPendingPacket(activeTransfer);
+  universalTts.stop();
 }
