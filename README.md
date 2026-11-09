@@ -6,7 +6,7 @@ This repository is the canonical home for WISP, imported from the verified WISP 
 
 ## Plugins
 
-- [AI Conversation](https://github.com/ericlmccormick/Pebble-Gemini-plugin) or another installed compatible `send_to_agent` plugin supplies the response. Configure the provider/model and authorization in that plugin.
+- [AI Conversation](https://github.com/ericlmccormick/Pebble-AI-Conversation) or another installed compatible `send_to_agent` plugin supplies the response. Configure the provider/model and authorization in that plugin.
 - [Universal TTS](https://github.com/ericlmccormick/Pebble-Universal-TTS) supplies optional spoken output. Configure any supported speech provider, key, and voice **in Universal TTS**, not in WISP.
 
 WISP now uses Universal TTS v1.2 SDK `universal_tts.speak(displayText)` on the phone and `universal_tts_handle_message()` on the watch. The SDK handles 500-character segmentation, provider selection, WAV verification, IMA ADPCM encoding, Bluetooth transfer, playback and cancellation. **Every non-error text response displayed to the watch is eligible for speech**, including responses categorized as delivery receipts. Diagnostic errors remain text-only. WISP still supports silent/text-only mode and the previous direct Gemini *conversation* option; direct Google TTS and hardcoded TTS voices have been removed.
