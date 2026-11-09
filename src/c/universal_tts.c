@@ -45,7 +45,14 @@ static float s_volume=1.0f;
   static uint16_t s_audio_zero_writes = 0;
   static uint16_t s_audio_frames_written = 0;
   static uint32_t s_audio_max_queued = 0;           
-  static bool s_ignore_audio = false;           
+  static bool s_ignore_audio = false;
+  // Watch-level reliable transport. Token prevents an old phone packet from
+  // corrupting the next answer; seq prevents duplicate retries.
+  static uint32_t s_transport_token = 0;
+  static uint32_t s_expected_sequence = 0;
+  static uint32_t s_transport_packets = 0;
+  static uint32_t s_transport_waits = 0;
+  static uint32_t s_transport_duplicates = 0;           
 
   static const int16_t stepTable[89] = {
     7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,
@@ -144,10 +151,12 @@ static float s_volume=1.0f;
     if(app_message_outbox_begin(&iter)!=APP_MSG_OK||!iter)return;
     char stats[144];
     snprintf(stats,sizeof(stats),
-      "empty=%u,empty_ms=%lu,partial=%u,zero=%u,peak=%lu,frames=%u",
+      "empty=%u,empty_ms=%lu,partial=%u,zero=%u,peak=%lu,frames=%u,rx=%lu,wait=%lu,dup=%lu",
       (unsigned)s_audio_empty_events,(unsigned long)s_audio_empty_ms,
       (unsigned)s_audio_partial_writes,(unsigned)s_audio_zero_writes,
-      (unsigned long)s_audio_max_queued,(unsigned)s_audio_frames_written);
+      (unsigned long)s_audio_max_queued,(unsigned)s_audio_frames_written,
+      (unsigned long)s_transport_packets,(unsigned long)s_transport_waits,
+      (unsigned long)s_transport_duplicates);
     dict_write_cstring(iter,MESSAGE_KEY_COMMAND,"AUDIO_STATS");
     dict_write_cstring(iter,MESSAGE_KEY_TEXT,stats);
     app_message_outbox_send();
@@ -318,6 +327,7 @@ static void clear_stats(void){
   s_audio_empty_events=0;s_audio_empty_ms=0;
   s_audio_partial_writes=0;s_audio_zero_writes=0;
   s_audio_frames_written=0;s_audio_max_queued=0;
+  s_transport_packets=0;s_transport_waits=0;s_transport_duplicates=0;
 }
 void universal_tts_init(void){clear_stats();s_ignore_audio=false;reset_adpcm_state();}
 bool universal_tts_supported(void){return true;}
@@ -329,44 +339,111 @@ void universal_tts_set_volume(float v){
   s_volume=v;
 }
 bool universal_tts_is_playing(void){return s_speaker_open||s_buffer_count||s_pcm_queued;}
+// Protocol tag uses the existing TEXT AppMessage key, so all Pebble apps
+// can use this reliability layer without adding new manifest keys.
+// Packet form: decimal-stream-token:decimal-sequence.
+static bool parse_transport_tag(DictionaryIterator *iter,
+                                uint32_t *token,uint32_t *sequence) {
+  Tuple *t=dict_find(iter,MESSAGE_KEY_TEXT);
+  if(!t || t->type!=TUPLE_CSTRING || !t->value || !t->value->cstring)return false;
+  unsigned long id=0,seq=0;
+  if(sscanf(t->value->cstring,"%lu:%lu",&id,&seq)!=2 || !id)return false;
+  *token=(uint32_t)id;
+  *sequence=(uint32_t)seq;
+  return true;
+}
+static void send_transport_reply(const char *command,
+                                 uint32_t token,uint32_t sequence){
+  DictionaryIterator *out=NULL;
+  if(app_message_outbox_begin(&out)!=APP_MSG_OK || !out)return;
+  char tag[48];
+  snprintf(tag,sizeof(tag),"%lu:%lu",
+           (unsigned long)token,(unsigned long)sequence);
+  dict_write_cstring(out,MESSAGE_KEY_COMMAND,command);
+  dict_write_cstring(out,MESSAGE_KEY_TEXT,tag);
+  app_message_outbox_send();
+}
 bool universal_tts_handle_message(DictionaryIterator *iter){
   if(!iter)return false;
   Tuple *cmd=dict_find(iter,MESSAGE_KEY_COMMAND);
   if(!cmd||cmd->type!=TUPLE_CSTRING)return false;
   const char *c=cmd->value->cstring;
   if(!strcmp(c,"AUDIO_RESET")){
-    stop_audio();clear_stats();s_ignore_audio=false;return true;
-  }
-  if(!strcmp(c,"AUDIO_STOP")){universal_tts_stop();return true;}
-  if(!strcmp(c,"AUDIO_CHUNK")){
-    if(s_ignore_audio)return true;
-    reset_idle_timer();
-    Tuple *payload=dict_find(iter,MESSAGE_KEY_CHUNK);
-    if(payload && payload->length){
-      push_to_ring_buffer(payload->value->data,payload->length);
-      if(!s_speaker_open && s_buffer_count>=START_BUFFER_THRESHOLD)
-        start_playback();
+    stop_audio();clear_stats();s_ignore_audio=false;
+    s_transport_token=0;s_expected_sequence=0;
+    Tuple *tag=dict_find(iter,MESSAGE_KEY_TEXT);
+    if(tag&&tag->type==TUPLE_CSTRING&&tag->value){
+      unsigned long token=0;
+      if(sscanf(tag->value->cstring,"%lu",&token)==1)
+        s_transport_token=(uint32_t)token;
     }
     return true;
   }
-  if(!strcmp(c,"AUDIO_SENTENCE_END")){
-    if(s_ignore_audio)return true;
+  if(!strcmp(c,"AUDIO_STOP")){
+    Tuple *tag=dict_find(iter,MESSAGE_KEY_TEXT);
+    if(tag&&tag->type==TUPLE_CSTRING&&tag->value&&s_transport_token){
+      unsigned long token=0;
+      if(sscanf(tag->value->cstring,"%lu",&token)==1&&
+         (uint32_t)token!=s_transport_token)return true;
+    }
+    universal_tts_stop();return true;
+  }
+  bool is_chunk=!strcmp(c,"AUDIO_CHUNK");
+  bool is_sentence_end=!strcmp(c,"AUDIO_SENTENCE_END");
+  bool is_stream_end=!strcmp(c,"AUDIO_STREAM_END");
+  if(!is_chunk&&!is_sentence_end&&!is_stream_end)return false;
+  if(s_ignore_audio)return true;
+  uint32_t token=0,sequence=0;
+  bool ack_mode=parse_transport_tag(iter,&token,&sequence);
+  if(ack_mode){
+    if(!s_transport_token||token!=s_transport_token)return true;
+    if(sequence<s_expected_sequence){
+      s_transport_duplicates++;
+      send_transport_reply("AUDIO_ACK",token,sequence);
+      return true;
+    }
+    if(sequence>s_expected_sequence){
+      s_transport_waits++;
+      send_transport_reply("AUDIO_WAIT",token,sequence);
+      return true;
+    }
+  }
+  if(is_chunk){
+    Tuple *payload=dict_find(iter,MESSAGE_KEY_CHUNK);
+    if(!payload||!payload->value||!payload->length){
+      if(ack_mode)send_transport_reply("AUDIO_WAIT",token,sequence);
+      return true;
+    }
+    if(payload->length>RING_BUFFER_SIZE-s_buffer_count){
+      // Do not drop ADPCM; ask the sender to retry the same sequence once
+      // the playback ring has drained. Old untagged callers remain supported.
+      s_transport_waits++;
+      if(ack_mode)send_transport_reply("AUDIO_WAIT",token,sequence);
+      else APP_LOG(APP_LOG_LEVEL_ERROR,"Audio ring full on legacy sender");
+      return true;
+    }
+    reset_idle_timer();
+    push_to_ring_buffer(payload->value->data,payload->length);
+    if(!s_speaker_open && s_buffer_count>=START_BUFFER_THRESHOLD)
+      start_playback();
+  }else if(is_sentence_end){
     reset_idle_timer();
     s_sentence_end_pending=s_buffer_count>0;
     if(!s_speaker_open && s_buffer_count>0)start_playback();
-    return true;
-  }
-  if(!strcmp(c,"AUDIO_STREAM_END")){
-    if(s_ignore_audio)return true;
+  }else{
     s_stream_end_received=true;
     cancel_idle_timer();
     s_sentence_end_pending=s_buffer_count>0;
     if(!s_speaker_open && s_buffer_count>0)start_playback();
     if(s_speaker_open && s_buffer_count==0 && s_pcm_queued==0)
       schedule_close_timer();
-    return true;
   }
-  return false;
+  if(ack_mode){
+    s_transport_packets++;
+    s_expected_sequence++;
+    send_transport_reply("AUDIO_ACK",token,sequence);
+  }
+  return true;
 }
 #else
 void universal_tts_init(void){}
