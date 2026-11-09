@@ -339,18 +339,37 @@ void universal_tts_set_volume(float v){
   s_volume=v;
 }
 bool universal_tts_is_playing(void){return s_speaker_open||s_buffer_count||s_pcm_queued;}
-// Protocol tag uses the existing TEXT AppMessage key, so all Pebble apps
-// can use this reliability layer without adding new manifest keys.
-// Packet form: decimal-stream-token:decimal-sequence.
-static bool parse_transport_tag(DictionaryIterator *iter,
-                                uint32_t *token,uint32_t *sequence) {
-  Tuple *t=dict_find(iter,MESSAGE_KEY_TEXT);
-  if(!t || t->type!=TUPLE_CSTRING)return false;
-  unsigned long id=0,seq=0;
-  if(sscanf(t->value->cstring,"%lu:%lu",&id,&seq)!=2 || !id)return false;
-  *token=(uint32_t)id;
-  *sequence=(uint32_t)seq;
+// Parse decimal tags without sscanf: Pebble's freestanding C linker cannot
+// link Newlib's scanf/stdio syscall machinery into a watch application.
+static bool parse_u32_decimal(const char **cursor,uint32_t *value){
+  const char *p=*cursor;
+  if(!p || *p<'0' || *p>'9')return false;
+  uint32_t n=0;
+  while(*p>='0'&&*p<='9'){
+    uint32_t digit=(uint32_t)(*p-'0');
+    if(n>429496729U || (n==429496729U && digit>5U))return false;
+    n=n*10U+digit;
+    p++;
+  }
+  *cursor=p;
+  *value=n;
   return true;
+}
+static bool parse_transport_tag(DictionaryIterator *iter,
+                                uint32_t *token,uint32_t *sequence){
+  Tuple *t=dict_find(iter,MESSAGE_KEY_TEXT);
+  if(!t||t->type!=TUPLE_CSTRING)return false;
+  const char *p=t->value->cstring;
+  if(!parse_u32_decimal(&p,token) || !*token || *p!=':')return false;
+  ++p;
+  if(!parse_u32_decimal(&p,sequence) || *p!='\0')return false;
+  return true;
+}
+static bool parse_stream_id(DictionaryIterator *iter,uint32_t *token){
+  Tuple *t=dict_find(iter,MESSAGE_KEY_TEXT);
+  if(!t||t->type!=TUPLE_CSTRING)return false;
+  const char *p=t->value->cstring;
+  return parse_u32_decimal(&p,token) && *token && *p=='\0';
 }
 static void send_transport_reply(const char *command,
                                  uint32_t token,uint32_t sequence){
@@ -371,21 +390,14 @@ bool universal_tts_handle_message(DictionaryIterator *iter){
   if(!strcmp(c,"AUDIO_RESET")){
     stop_audio();clear_stats();s_ignore_audio=false;
     s_transport_token=0;s_expected_sequence=0;
-    Tuple *tag=dict_find(iter,MESSAGE_KEY_TEXT);
-    if(tag&&tag->type==TUPLE_CSTRING){
-      unsigned long token=0;
-      if(sscanf(tag->value->cstring,"%lu",&token)==1)
-        s_transport_token=(uint32_t)token;
-    }
+    uint32_t token=0;
+    if(parse_stream_id(iter,&token))s_transport_token=token;
     return true;
   }
   if(!strcmp(c,"AUDIO_STOP")){
-    Tuple *tag=dict_find(iter,MESSAGE_KEY_TEXT);
-    if(tag&&tag->type==TUPLE_CSTRING&&s_transport_token){
-      unsigned long token=0;
-      if(sscanf(tag->value->cstring,"%lu",&token)==1&&
-         (uint32_t)token!=s_transport_token)return true;
-    }
+    uint32_t token=0;
+    if(s_transport_token && parse_stream_id(iter,&token) &&
+       token!=s_transport_token)return true;
     universal_tts_stop();return true;
   }
   bool is_chunk=!strcmp(c,"AUDIO_CHUNK");
