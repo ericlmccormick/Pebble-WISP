@@ -97,7 +97,9 @@ assert.equal(manifest.pebble.resources.media.some(media =>
 // behind newly written PCM and made small pauses (e.g. commas) choppy.
 const watchC = fs.readFileSync(path.join(__dirname, '..', 'src', 'c', 'main.c'), 'utf8');
 assert.match(watchC, /#define PLAYBACK_ADPCM_BYTES 160\b/, 'decode should use short 40-ms blocks');
-assert.match(watchC, /#define PLAYBACK_INTERVAL_MS 35\b/, 'short refills should be paced');
+assert.match(watchC, /#define PLAYBACK_INTERVAL_MS 40\b/, 'short refills should be paced');
+assert.match(watchC, /#define START_BUFFER_THRESHOLD 5600\b/,
+  'watch must buffer enough ADPCM to survive Universal TTS plugin round-trip gaps');
 assert.match(watchC, /#define SILENCE_PCM_SAMPLES 240\b/, 'silence must not accumulate faster than hardware drains');
 const playbackSection = watchC.split('static void playback_timer_callback(void *data) {').pop().split('static void stop_audio() {')[0];
 assert.match(playbackSection, /if \(s_pending_pcm_offset < s_pending_pcm_bytes\)[\s\S]+else if \(s_pending_pcm_offset == s_pending_pcm_bytes\)/,
@@ -154,23 +156,21 @@ assert.throws(() => api.wav('bad'), /Invalid WAV/);
 
 api.seed(Array.from({length:800},(_,i)=>i%256));
 api.start(1,314);
-assert.equal(sent[0].CHUNK.length, 360);
+assert.equal(sent[0].CHUNK.length, 700);
 assert.equal(sent[0].SEQ, 0);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:22}); // future ACK ignored
 assert.equal(sent.length,1);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:0});
-assert.equal(sent[1].CHUNK.length,360);
+assert.equal(sent[1].CHUNK.length,100);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:0}); // duplicate ACK ignored
 assert.equal(sent.length,2);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:1});
-assert.equal(sent[2].CHUNK.length,80);
+assert.equal(sent[2].COMMAND,'AUDIO_SENTENCE_END');
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:2});
-assert.equal(sent[3].COMMAND,'AUDIO_SENTENCE_END');
-api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:3});
-assert.equal(sent[4].COMMAND, 'AUDIO_STREAM_END', 'final marker must follow last sentence');
-assert.equal(sent[4].SEQ, 4);
+assert.equal(sent[3].COMMAND, 'AUDIO_STREAM_END', 'final marker must follow last sentence');
+assert.equal(sent[3].SEQ, 3);
 assert.equal(api.state().sending,true, 'final marker requires watch acknowledgment');
-api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:4});
+api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:3});
 assert.equal(api.state().sending,false);
 assert.equal(api.state().active,null);
 
