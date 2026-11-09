@@ -1,8 +1,8 @@
-name: WISP Universal TTS and JS regression tests
+name: WISP restored 2.1.6 audio regression tests
 
 on:
   push:
-    branches: [main, 'feature/**']
+    branches: [main, 'feature/**', 'fix/**']
   pull_request:
 
 jobs:
@@ -13,29 +13,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Validate source syntax
+      - name: Check syntax of restored watch-ACK transport
         run: |
           node --check src/pkjs/index.js
-          node --check tests/pkjs_protocol_test.js
-          node --check src/pkjs/universal_tts.js
-          node --check src/pkjs/google_tts_legacy.js
-          node --check tests/google_tts_legacy.test.cjs
-          node --check tests/universal_tts_integration.test.cjs
-          node --check tests/universal_tts_stream_lifecycle.test.cjs
-          node --check tests/long_audio_reliability.test.cjs
-          node --check tests/plugin_settings_ui.test.cjs
+          node --check src/pkjs/google_tts_stream.js
           node --check src/pkjs/agent_plugins.js
-          node --check tests/agent_plugins.test.cjs
-      - name: Test native watch speaker stream lifecycle
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -Itests/mock -Isrc/c tests/native_audio_lifecycle_test.c -o /tmp/wisp-audio-test
-          /tmp/wisp-audio-test
-      - name: Test audio protocol and release hardening
+          node --check tests/pkjs_protocol_test.js
+          node --check tests/google_tts_adapter.test.cjs
+          node --check tests/plugin_settings_ui.test.cjs
+      - name: Run last-working audio and WISP UI regression tests
         run: |
           node tests/pkjs_protocol_test.js
-          node tests/universal_tts_integration.test.cjs
-          node tests/universal_tts_stream_lifecycle.test.cjs
-          node tests/long_audio_reliability.test.cjs
-          node tests/google_tts_legacy.test.cjs
+          node tests/google_tts_adapter.test.cjs
           node tests/plugin_settings_ui.test.cjs
           node tests/agent_plugins.test.cjs
