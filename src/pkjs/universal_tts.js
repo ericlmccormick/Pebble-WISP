@@ -28,12 +28,36 @@ module.exports={
     var MAX_READY_AUDIO_SENTENCES=2;
     var isFetchingTTS=false,isSendingBLE=false,requestGeneration=0;
     var js_adpcm_valpred=0,js_adpcm_index=0;
-    var conversationAudioFinalPending=false;
+    var conversationAudioFinalPending=false,streamEndDeliveryPending=false;
     function conversationMaybeCompleteAudio(){
-      if(!conversationAudioFinalPending||isFetchingTTS||isSendingBLE||
-         sentenceQueue.length||readyAudioQueue.length||pluginPreparedSentence)return;
-      conversationAudioFinalPending=false;
-      if(onComplete)onComplete();
+      if(!conversationAudioFinalPending||streamEndDeliveryPending||
+         isFetchingTTS||isSendingBLE||sentenceQueue.length||
+         readyAudioQueue.length||pluginPreparedSentence)return;
+      // The watch must know the ENTIRE response has arrived before it can
+      // close the speaker. Sentence boundaries are not final stream ends.
+      streamEndDeliveryPending=true;
+      var gen=requestGeneration;
+      function sendEnd(attempt){
+        if(gen!==requestGeneration)return;
+        Pebble.sendAppMessage({COMMAND:'AUDIO_STREAM_END'},function(){
+          if(gen!==requestGeneration)return;
+          streamEndDeliveryPending=false;
+          conversationAudioFinalPending=false;
+          if(onComplete)onComplete();
+        },function(){
+          if(gen!==requestGeneration)return;
+          if(attempt>=4){
+            streamEndDeliveryPending=false;
+            conversationAudioFinalPending=false;
+            var error=Error('Could not finalize watch audio stream');
+            if(onError)onError(error);
+            Pebble.sendAppMessage({COMMAND:'AUDIO_STOP'},function(){},function(){});
+            return;
+          }
+          setTimeout(function(){sendEnd(attempt+1);},150*(attempt+1));
+        });
+      }
+      sendEnd(0);
     }
 
 var stepTable = [
@@ -381,7 +405,7 @@ function startPluginTTSFetchLoop(gen){
     if(gen!==requestGeneration)return;
     ++requestGeneration; // Invalidate any in-flight BLE packets.
     isFetchingTTS=false;isSendingBLE=false;
-    readyAudioQueue=[];conversationAudioFinalPending=false;sentenceQueue=[];
+    readyAudioQueue=[];conversationAudioFinalPending=false;streamEndDeliveryPending=false;sentenceQueue=[];
     pluginPreparedSentence=null;
     console.log('Universal TTS plugin TTS: '+String(error.message||error));
     if(onError)onError(error);
@@ -430,7 +454,7 @@ function startBLESendLoop() {
     isSendingBLE=false;
     readyAudioQueue=[]; sentenceQueue=[]; isFetchingTTS=false;
     pluginPreparedSentence=null;
-    conversationAudioFinalPending=false;
+    conversationAudioFinalPending=false;streamEndDeliveryPending=false;
     ++requestGeneration; // invalidate any queued TTS delivery
     console.log('Pebble Bluetooth audio delivery failed after retries');
     if(onError)onError(Error('Bluetooth audio delivery failed'));
@@ -502,7 +526,7 @@ function startBLESendLoop() {
       ++requestGeneration;
       sentenceQueue=[];readyAudioQueue=[];pluginPreparedSentence=null;
       isFetchingTTS=false;isSendingBLE=false;
-      conversationAudioFinalPending=false;
+      conversationAudioFinalPending=false;streamEndDeliveryPending=false;
       Pebble.sendAppMessage({COMMAND:'AUDIO_STOP'},function(){},function(){});
     }
     function speak(text){
@@ -529,7 +553,7 @@ function startBLESendLoop() {
         }
         if(piece)sentenceQueue.push(piece);
       });
-      conversationAudioFinalPending=true;
+      conversationAudioFinalPending=true;streamEndDeliveryPending=false;
       return new Promise(function(resolve,reject){
         Pebble.sendAppMessage({COMMAND:'AUDIO_RESET'},function(){
           if(gen!==requestGeneration){reject(Error('Cancelled'));return;}
