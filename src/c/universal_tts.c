@@ -345,7 +345,7 @@ bool universal_tts_is_playing(void){return s_speaker_open||s_buffer_count||s_pcm
 static bool parse_transport_tag(DictionaryIterator *iter,
                                 uint32_t *token,uint32_t *sequence) {
   Tuple *t=dict_find(iter,MESSAGE_KEY_TEXT);
-  if(!t || t->type!=TUPLE_CSTRING || !t->value || !t->value->cstring)return false;
+  if(!t || t->type!=TUPLE_CSTRING || !t->value)return false;
   unsigned long id=0,seq=0;
   if(sscanf(t->value->cstring,"%lu:%lu",&id,&seq)!=2 || !id)return false;
   *token=(uint32_t)id;
