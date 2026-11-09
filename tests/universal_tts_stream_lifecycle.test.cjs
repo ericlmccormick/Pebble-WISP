@@ -13,7 +13,7 @@ function wavFor(text){
   return b;
 }
 const sessions=new Map(),messages=[],actions=[],diag=new Map(),spoken=[],errors=[];
-let resolveDone;
+let resolveDone,ttsClient=null;
 const done=new Promise(r=>{resolveDone=r;});
 const Pebble={
   invokeAction:async function(req){
@@ -47,10 +47,12 @@ const Pebble={
   sendAppMessage:function(message,ok,fail){
     messages.push(message);
     if(ok)ok();
+    if(message.TEXT && /^(AUDIO_CHUNK|AUDIO_SENTENCE_END|AUDIO_STREAM_END)$/.test(message.COMMAND))
+      setImmediate(()=>ttsClient.handleMessage({COMMAND:'AUDIO_ACK',TEXT:message.TEXT}));
   }
 };
 async function run(){
-  const tts=sdk.create({
+  const tts=ttsClient=sdk.create({
     Pebble,storage:{getItem:k=>diag.get(k)||null,setItem:(k,v)=>diag.set(k,String(v))},
     onError:e=>errors.push(String(e&&e.message||e)),
     onComplete:resolveDone
