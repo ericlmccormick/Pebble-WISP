@@ -779,6 +779,29 @@ function sendErrorToWatch(msg) {
 // SECTION 11: CORE INTELLIGENCE ROUTINES
 // =========================================================================
 
+// Preserve the displayed reply while enforcing Universal TTS's 500-char
+// request limit. Prefer sentence and word boundaries; never split UTF-16
+// surrogate pairs. Direct Google TTS uses the same safe segmentation.
+function splitSpeechText(text,limit){
+  limit=Math.min(500,Math.max(20,limit||450));
+  var phrases=String(text||'').match(/[^.!?]+[.!?]*/g)||[String(text||'')];
+  var result=[];
+  phrases.forEach(function(phrase){
+    phrase=phrase.trim();
+    while(phrase.length>limit){
+      var cut=phrase.lastIndexOf(' ',limit);
+      if(cut<limit/2)cut=limit;
+      var code=phrase.charCodeAt(cut-1),next=phrase.charCodeAt(cut);
+      if(code>=0xd800&&code<=0xdbff&&next>=0xdc00&&next<=0xdfff)cut--;
+      var part=phrase.slice(0,cut).trim();
+      if(part)result.push(part);
+      phrase=phrase.slice(cut).trim();
+    }
+    if(phrase)result.push(phrase);
+  });
+  return result;
+}
+
 function fetchGeminiResponse(prompt, skipAudio) {
   cancelCurrentAudio();
   var generation = requestGeneration;
@@ -863,8 +886,10 @@ function fetchGeminiResponse(prompt, skipAudio) {
         console.log('Starting TTS',ttsBackend,'for response stream',streamId);
         // Speak the SAME text we displayed, rather than relying on separate
         // agent metadata or an unbounded full response.
-        var rawSentences = displayText.match(/[^.!?]+[.!?]*/g) || [displayText];
-        sentenceQueue = rawSentences.map(function(part) { return part.trim(); }).filter(function(part) { return part.length > 0; });
+        // Universal TTS requires <=500 characters per tts_prepare call.
+        // A long unpunctuated AI sentence previously caused the SECOND
+        // speech request to fail after the first 2-3 seconds of playback.
+        sentenceQueue = splitSpeechText(displayText, 450);
         startTTSFetchLoop(generation, streamId);
       }
       Pebble.sendAppMessage(textPayload, startAnswer, function(error) {
@@ -1044,7 +1069,7 @@ function sendPendingPacket(transfer) {
   transfer.attempts++;
   if (transfer.attempts > MAX_BLE_RETRIES) {
     console.log('Audio stopped: retry limit reached at packet ' + transfer.seq +
-      ' ('+transfer.attempts+' attempts, '+transfer.chunk?.length+' bytes, stream '+transfer.streamId+')');
+      ' ('+transfer.attempts+' attempts, '+(transfer.chunk ? transfer.chunk.length : 0)+' bytes, stream '+transfer.streamId+')');
     cancelCurrentAudio();
     Pebble.sendAppMessage({ COMMAND:'AUDIO_ERROR', STREAM_ID:transfer.streamId });
     return;
