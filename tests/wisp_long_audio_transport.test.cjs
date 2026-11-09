@@ -154,8 +154,12 @@ const context={
 vm.runInNewContext(source,context);
 (async()=>{
   listeners.appmessage({payload:{COMMAND:'DICTATION',TEXT:'Ten second transport test',SPEAKER_CAPABLE:1,VOLUME:100}});
-  await Promise.race([completion,
-    sleep(32000).then(()=>{throw Error('10-second WISP audio stream hung or cut out: received '+received.length+' bytes');})]);
+  let watchdog;
+  try {
+    await Promise.race([completion,new Promise((_,reject)=>{
+      watchdog=setTimeout(()=>reject(Error('10-second WISP audio stream hung or cut out: received '+received.length+' bytes')),32000);
+    })]);
+  } finally {clearTimeout(watchdog);}
   drain();
   assert.equal(finalSeen,1,'the response must have exactly one final marker');
   assert.equal(prepareCount,1,'one TTS sentence should be prepared');
