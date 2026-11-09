@@ -172,7 +172,8 @@ function create(options){
   var sdk=UniversalTts.create({
     Pebble:facade,pluginId:'legacy-google-direct-local',
     storage:options.storage,
-    onError:options.onError,onComplete:options.onComplete
+    onError:options.onError,onComplete:options.onComplete,
+    onStats:options.onStats
   });
   return {
     speak:function(text){return sdk.speak(text);},
