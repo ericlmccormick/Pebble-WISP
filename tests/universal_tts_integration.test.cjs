@@ -25,7 +25,7 @@ function fnv(buf){
   return h>>>0;
 }
 const actions=[],messages=[];
-let complete,rejectComplete;
+let complete,rejectComplete,ttsClient=null;
 const done=new Promise((resolve,reject)=>{complete=resolve;rejectComplete=reject;});
 const Pebble={
   invokeAction:async req=>{
@@ -50,11 +50,15 @@ const Pebble={
     if(req.action==='tts_release')return {ok:true,text:'{"released":true}'};
     throw Error('Unexpected action: '+req.action);
   },
-  sendAppMessage:(message,success)=>{messages.push(message);if(success)success();}
+  sendAppMessage:(message,success)=>{
+    messages.push(message);if(success)success();
+    if(message.TEXT&&/^(AUDIO_CHUNK|AUDIO_SENTENCE_END|AUDIO_STREAM_END)$/.test(message.COMMAND))
+      setImmediate(()=>ttsClient.handleMessage({COMMAND:'AUDIO_ACK',TEXT:message.TEXT}));
+  }
 };
 (async()=>{
   const storage=new Map();
-  const tts=sdk.create({Pebble,storage:{
+  const tts=ttsClient=sdk.create({Pebble,storage:{
     getItem:key=>storage.get(key)||null,setItem:(key,v)=>storage.set(key,String(v))
   },onError:rejectComplete,onComplete:complete});
   await assert.rejects(tts.speak(''),/empty/);
