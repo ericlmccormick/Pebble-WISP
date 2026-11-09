@@ -11,9 +11,9 @@
   #define PERSIST_KEY_VOLUME 100           
   #define PLAYBACK_ADPCM_BYTES 160  // 40 ms per decode block at 8 kHz         
   #define PLAYBACK_PCM_SAMPLES (PLAYBACK_ADPCM_BYTES * 2) 
-  #define PLAYBACK_INTERVAL_MS 35 // Refill in small PCM blocks, without stacking long audio ahead         
-  #define START_BUFFER_THRESHOLD 2400  // 0.6 seconds of ADPCM at 8 kHz
-  #define MAX_START_BUFFER 12000    // Leave room for incoming packets
+  #define PLAYBACK_INTERVAL_MS 40 // 160 ADPCM bytes = 320 PCM samples = exactly 40 ms at 8 kHz         
+  #define START_BUFFER_THRESHOLD 5600  // 1.4 s reserve: allow slower plugin chunk delivery and BLE jitter
+  #define MAX_START_BUFFER 14000    // Leave 2.3 KiB in the 16-KiB ring for incoming ACKed packets
   #define SPEAKER_BYTES_PER_SECOND 4000
   #define SENTENCE_QUEUE_SIZE 32 // Prebuffer independently for each spoken sentence      
   #define STREAM_FINISH_DRAIN_MS 700  // Flush last PCM and silent tail before amplifier shutdown
@@ -322,10 +322,12 @@ static void update_text_layout() {
     if (link_rate < 4800) {
       uint32_t shortfall = link_rate >= SPEAKER_BYTES_PER_SECOND ? 0 :
         (uint32_t)(((uint64_t)total * (SPEAKER_BYTES_PER_SECOND - link_rate)) / SPEAKER_BYTES_PER_SECOND);
-      target = 4000 + shortfall;
-    } else if (link_rate < 6000) {
-      target = 3600;
+      uint32_t slow_link_target = 4000 + shortfall;
+      if (slow_link_target > target) target = slow_link_target;
     }
+    // Never *lower* the reserve after a noisy initial ACK speed estimate.
+    // Home Assistant uses a real-time-paced sender; the WISP watch uses
+    // stop-and-wait and may experience gaps between plugin WAV chunks.
     if (target > MAX_START_BUFFER) target = MAX_START_BUFFER;
     if (total > 0 && target > total) target = total;
     return target;

@@ -20,10 +20,12 @@ jobs:
           node --check src/pkjs/agent_plugins.js
           node --check tests/pkjs_protocol_test.js
           node --check tests/google_tts_adapter.test.cjs
+          node --check tests/wisp_long_audio_transport.test.cjs
           node --check tests/plugin_settings_ui.test.cjs
       - name: Run last-working audio and WISP UI regression tests
         run: |
           node tests/pkjs_protocol_test.js
           node tests/google_tts_adapter.test.cjs
+          node tests/wisp_long_audio_transport.test.cjs
           node tests/plugin_settings_ui.test.cjs
           node tests/agent_plugins.test.cjs

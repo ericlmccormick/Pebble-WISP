@@ -71,7 +71,7 @@ assert.doesNotMatch(program,/if\s*\(\s*result\.kind\s*===\s*['"]receipt['"]\s*\)
   'delivery receipts must not bypass text-to-speech after being displayed');
 assert.doesNotMatch(program,/if\s*\(\s*data\.delivery_receipt\s*\)/,
   'no special text-only receipt path may bypass TTS');
-assert.match(program,/var rawSentences = displayText\.match/,
+assert.match(program,/sentenceQueue = splitSpeechText\(displayText, 450\)/,
   'TTS must receive the same content displayed on the watch');
 
 assert.match(program,/refreshAgentInfo\(\)/);
@@ -97,7 +97,9 @@ assert.equal(manifest.pebble.resources.media.some(media =>
 // behind newly written PCM and made small pauses (e.g. commas) choppy.
 const watchC = fs.readFileSync(path.join(__dirname, '..', 'src', 'c', 'main.c'), 'utf8');
 assert.match(watchC, /#define PLAYBACK_ADPCM_BYTES 160\b/, 'decode should use short 40-ms blocks');
-assert.match(watchC, /#define PLAYBACK_INTERVAL_MS 35\b/, 'short refills should be paced');
+assert.match(watchC, /#define PLAYBACK_INTERVAL_MS 40\b/, 'short refills should be paced');
+assert.match(watchC, /#define START_BUFFER_THRESHOLD 5600\b/,
+  'watch must buffer enough ADPCM to survive Universal TTS plugin round-trip gaps');
 assert.match(watchC, /#define SILENCE_PCM_SAMPLES 240\b/, 'silence must not accumulate faster than hardware drains');
 const playbackSection = watchC.split('static void playback_timer_callback(void *data) {').pop().split('static void stop_audio() {')[0];
 assert.match(playbackSection, /if \(s_pending_pcm_offset < s_pending_pcm_bytes\)[\s\S]+else if \(s_pending_pcm_offset == s_pending_pcm_bytes\)/,
@@ -139,6 +141,15 @@ assert.equal(context.normalizeTtsVoice('en-US-Studio-M'), 'en-US-Wavenet-D');
 assert.equal(context.normalizeTtsVoice('en-US-Journey-F'), 'en-US-Wavenet-F');
 assert.equal(context.normalizeTtsVoice('en-US-Wavenet-D'), 'en-US-Wavenet-D');
 assert.equal(context.isInvalidVoiceError(Error("Voice 'en-US-Chirp3-HD-F' does not exist. Is it misspelled?")), true);
+const longSpeech='One '.repeat(180);
+const segments=context.splitSpeechText(longSpeech,450);
+assert.ok(segments.length>=2, 'overlong single sentences must be segmented');
+assert.ok(segments.every(x=>x.length<=450), 'Universal TTS maximum is 500 chars per action');
+assert.equal(segments.join(' '),longSpeech.trim(),'the full reply must be spoken');
+const unicodeSpeech='🌍'.repeat(260);
+const unicodeSegments=context.splitSpeechText(unicodeSpeech,450);
+assert.ok(unicodeSegments.every(x=>!/[\\uD800-\\uDBFF]$/.test(x)&&! /^[\\uDC00-\\uDFFF]/.test(x)),
+  'speech segments must not split Unicode surrogate pairs');
 
 assert.equal(api.adpcm([0, 1200, -1200, 1000]).length, 2, 'ADPCM is 4 bits/sample');
 const wav = Buffer.alloc(44 + 8);
@@ -154,23 +165,21 @@ assert.throws(() => api.wav('bad'), /Invalid WAV/);
 
 api.seed(Array.from({length:800},(_,i)=>i%256));
 api.start(1,314);
-assert.equal(sent[0].CHUNK.length, 360);
+assert.equal(sent[0].CHUNK.length, 700);
 assert.equal(sent[0].SEQ, 0);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:22}); // future ACK ignored
 assert.equal(sent.length,1);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:0});
-assert.equal(sent[1].CHUNK.length,360);
+assert.equal(sent[1].CHUNK.length,100);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:0}); // duplicate ACK ignored
 assert.equal(sent.length,2);
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:1});
-assert.equal(sent[2].CHUNK.length,80);
+assert.equal(sent[2].COMMAND,'AUDIO_SENTENCE_END');
 api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:2});
-assert.equal(sent[3].COMMAND,'AUDIO_SENTENCE_END');
-api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:3});
-assert.equal(sent[4].COMMAND, 'AUDIO_STREAM_END', 'final marker must follow last sentence');
-assert.equal(sent[4].SEQ, 4);
+assert.equal(sent[3].COMMAND, 'AUDIO_STREAM_END', 'final marker must follow last sentence');
+assert.equal(sent[3].SEQ, 3);
 assert.equal(api.state().sending,true, 'final marker requires watch acknowledgment');
-api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:4});
+api.ack({COMMAND:'AUDIO_ACK', STREAM_ID:314, SEQ:3});
 assert.equal(api.state().sending,false);
 assert.equal(api.state().active,null);
 

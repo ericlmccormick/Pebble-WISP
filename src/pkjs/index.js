@@ -200,12 +200,14 @@ var readyAudioQueue = [];
 var isFetchingTTS = false; 
 var isSendingBLE = false;
 var requestGeneration = 0;
-var MAX_BLE_RETRIES = 5;
+var MAX_BLE_RETRIES = 8; // Allow transient phone/watch scheduling stalls without cutting off speech.
 var nextStreamId = (Date.now() & 0x7fffffff) || 1;
 var activeTransfer = null;
 var streamEndSent = false;
-var AUDIO_PACKET_BYTES = 360; // Leaves room for command/session/sequence tuples.
-var ACK_TIMEOUT_MS = 1800;
+// Home Assistant's proven transport carries 700 ADPCM bytes per AppMessage.
+// WISP keeps its watch-level ACK/SEQ safety but halves round-trip overhead.
+var AUDIO_PACKET_BYTES = 700;
+var ACK_TIMEOUT_MS = 1800; // Do not mistake a slow watch ACK for lost audio.
 var rateBytesPerSecond = 5200; // Conservative initial link estimate.
 var lastAckTime = 0;
 function requestJsonWithTimeout(url, options, timeoutMs) {
@@ -247,7 +249,11 @@ function apiErrorMessage(error, service) {
 
 var js_adpcm_valpred = 0;  
 var js_adpcm_index = 0;
-var googleTtsStream=GoogleTtsStream.create({Pebble:Pebble,pluginId:GOOGLE_TTS_PLUGIN_UUID,encodeADPCM:encodeADPCM});
+// Old Direct-Gemini/Direct-Google users must still launch on Pebble phone
+// versions without the plugin invokeAction API. Only plugin speech needs it.
+var googleTtsStream=typeof Pebble.invokeAction==='function'?
+  GoogleTtsStream.create({Pebble:Pebble,pluginId:GOOGLE_TTS_PLUGIN_UUID,encodeADPCM:encodeADPCM}):
+  {stream:function(){return Promise.reject(Error('Universal TTS needs a plugin-capable Pebble phone app'));}};
 
 
 // =========================================================================
@@ -777,6 +783,29 @@ function sendErrorToWatch(msg) {
 // SECTION 11: CORE INTELLIGENCE ROUTINES
 // =========================================================================
 
+// Preserve the displayed reply while enforcing Universal TTS's 500-char
+// request limit. Prefer sentence and word boundaries; never split UTF-16
+// surrogate pairs. Direct Google TTS uses the same safe segmentation.
+function splitSpeechText(text,limit){
+  limit=Math.min(500,Math.max(20,limit||450));
+  var phrases=String(text||'').match(/[^.!?]+[.!?]*/g)||[String(text||'')];
+  var result=[];
+  phrases.forEach(function(phrase){
+    phrase=phrase.trim();
+    while(phrase.length>limit){
+      var cut=phrase.lastIndexOf(' ',limit);
+      if(cut<limit/2)cut=limit;
+      var code=phrase.charCodeAt(cut-1),next=phrase.charCodeAt(cut);
+      if(code>=0xd800&&code<=0xdbff&&next>=0xdc00&&next<=0xdfff)cut--;
+      var part=phrase.slice(0,cut).trim();
+      if(part)result.push(part);
+      phrase=phrase.slice(cut).trim();
+    }
+    if(phrase)result.push(phrase);
+  });
+  return result;
+}
+
 function fetchGeminiResponse(prompt, skipAudio) {
   cancelCurrentAudio();
   var generation = requestGeneration;
@@ -861,8 +890,10 @@ function fetchGeminiResponse(prompt, skipAudio) {
         console.log('Starting TTS',ttsBackend,'for response stream',streamId);
         // Speak the SAME text we displayed, rather than relying on separate
         // agent metadata or an unbounded full response.
-        var rawSentences = displayText.match(/[^.!?]+[.!?]*/g) || [displayText];
-        sentenceQueue = rawSentences.map(function(part) { return part.trim(); }).filter(function(part) { return part.length > 0; });
+        // Universal TTS requires <=500 characters per tts_prepare call.
+        // A long unpunctuated AI sentence previously caused the SECOND
+        // speech request to fail after the first 2-3 seconds of playback.
+        sentenceQueue = splitSpeechText(displayText, 450);
         startTTSFetchLoop(generation, streamId);
       }
       Pebble.sendAppMessage(textPayload, startAnswer, function(error) {
@@ -1041,7 +1072,8 @@ function sendPendingPacket(transfer) {
   if (transfer.timer) clearTimeout(transfer.timer);
   transfer.attempts++;
   if (transfer.attempts > MAX_BLE_RETRIES) {
-    console.log('Audio stopped: retry limit reached at packet ' + transfer.seq);
+    console.log('Audio stopped: retry limit reached at packet ' + transfer.seq +
+      ' ('+transfer.attempts+' attempts, '+(transfer.chunk ? transfer.chunk.length : 0)+' bytes, stream '+transfer.streamId+')');
     cancelCurrentAudio();
     Pebble.sendAppMessage({ COMMAND:'AUDIO_ERROR', STREAM_ID:transfer.streamId });
     return;
@@ -1071,6 +1103,9 @@ function handleAudioAck(dict) {
   if (dict.COMMAND === 'AUDIO_WAIT') {
     // Bound a hardware or connection fault that never frees its ring buffer.
     t.waits = (t.waits || 0) + 1;
+    if(t.waits===1||t.waits%10===0)
+      console.log('Watch buffering/backpressure: seq='+t.seq+', ring free='+dict.BUFFER_FREE+
+        ', waits='+t.waits);
     if (t.waits > 75) {
       console.log('Audio buffer did not drain');
       cancelCurrentAudio();
@@ -1087,6 +1122,8 @@ function handleAudioAck(dict) {
     rateBytesPerSecond = Math.max(1000, Math.min(12000, 0.8 * rateBytesPerSecond + 0.2 * measured));
   }
   lastAckTime = now;
+  if(t.attempts>1)console.log('Audio ACK recovered after '+t.attempts+
+    ' send attempts; seq='+t.seq+', free='+dict.BUFFER_FREE);
   activeTransfer = null;
   if (t.final) {
     currentAudioSeq++;
