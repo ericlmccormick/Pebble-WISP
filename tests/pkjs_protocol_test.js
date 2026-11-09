@@ -115,7 +115,7 @@ async function ask(text,speaker=1,volume=100){
        'var ttsBackend=migrateSpeechProvider();'.length);
   function migrate(values){
     const local={...values};
-    const target={localStorage:{getItem:k=>local[k]??null,
+    const target={ttsApiKey:local.TTS_API_KEY||'',localStorage:{getItem:k=>local[k]??null,
       setItem:(k,v)=>{local[k]=String(v);},removeItem:k=>delete local[k]}};
     vm.runInNewContext(fn,target);
     return {provider:target.ttsBackend,local};
