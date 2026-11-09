@@ -37,27 +37,19 @@ module.exports={
       // close the speaker. Sentence boundaries are not final stream ends.
       streamEndDeliveryPending=true;
       var gen=requestGeneration;
-      function sendEnd(attempt){
+      sendReliablePacket('AUDIO_STREAM_END',null,gen).then(function(){
         if(gen!==requestGeneration)return;
-        Pebble.sendAppMessage({COMMAND:'AUDIO_STREAM_END'},function(){
-          if(gen!==requestGeneration)return;
-          streamEndDeliveryPending=false;
-          conversationAudioFinalPending=false;
-          if(onComplete)onComplete();
-        },function(){
-          if(gen!==requestGeneration)return;
-          if(attempt>=4){
-            streamEndDeliveryPending=false;
-            conversationAudioFinalPending=false;
-            var error=Error('Could not finalize watch audio stream');
-            if(onError)onError(error);
-            Pebble.sendAppMessage({COMMAND:'AUDIO_STOP'},function(){},function(){});
-            return;
-          }
-          setTimeout(function(){sendEnd(attempt+1);},150*(attempt+1));
-        });
-      }
-      sendEnd(0);
+        streamEndDeliveryPending=false;
+        conversationAudioFinalPending=false;
+        if(onComplete)onComplete();
+      }).catch(function(error){
+        if(gen!==requestGeneration)return;
+        streamEndDeliveryPending=false;
+        conversationAudioFinalPending=false;
+        if(onError)onError(error);
+        Pebble.sendAppMessage({COMMAND:'AUDIO_STOP',TEXT:String(transportId)},
+          function(){},function(){});
+      });
     }
 
 var stepTable = [
@@ -413,113 +405,131 @@ function startPluginTTSFetchLoop(gen){
   });
 }
 
-var bleFlowGeneration=-1,bleFlowSent=0,bleFlowStartedAt=0;
-var BLE_PLAYBACK_BPS=4000,BLE_PREBUFFER_BYTES=2800,BLE_SAFE_QUEUE_BYTES=9000;
-function bleAudioQueueEstimate(now){
-  if(!bleFlowStartedAt)return bleFlowSent;
-  return Math.max(0,bleFlowSent-
-    Math.max(0,now-bleFlowStartedAt)*BLE_PLAYBACK_BPS/1000);
+// Packet delivery is confirmed by the WATCH (AUDIO_ACK), never just
+// Pebble.sendAppMessage's phone transport callback. The watch sends AUDIO_WAIT
+// when its ring has insufficient space; the sender retries without dropping
+// ADPCM or assuming a fixed Bluetooth speed.
+var transportId=0,nextPacketSequence=0,pendingPacket=null;
+var AUDIO_PACKET_BYTES=360,ACK_TIMEOUT_MS=1800,MAX_PACKET_ATTEMPTS=7;
+function abandonPendingPacket(){
+  if(pendingPacket&&pendingPacket.timer)clearTimeout(pendingPacket.timer);
+  pendingPacket=null;
 }
-function bleAudioWaitMs(nextSize,now){
-  if(!bleFlowStartedAt)return 0;
-  var excess=bleAudioQueueEstimate(now)+nextSize-BLE_SAFE_QUEUE_BYTES;
-  return excess>0?Math.ceil(excess*1000/BLE_PLAYBACK_BPS):0;
+function sendReliablePacket(command,bytes,gen){
+  return new Promise(function(resolve,reject){
+    if(gen!==requestGeneration){reject(Error('TTS cancelled'));return;}
+    if(pendingPacket){reject(Error('Overlapping audio packets'));return;}
+    var tag=String(transportId)+':'+String(nextPacketSequence);
+    var payload={COMMAND:command,TEXT:tag};
+    if(bytes)payload.CHUNK=bytes;
+    var transfer={tag:tag,gen:gen,timer:null,attempts:0,waits:0,
+      resolve:resolve,reject:reject};
+    pendingPacket=transfer;
+    function fail(error){
+      if(pendingPacket!==transfer)return;
+      if(transfer.timer)clearTimeout(transfer.timer);
+      pendingPacket=null;
+      reject(error);
+    }
+    function attempt(){
+      if(pendingPacket!==transfer)return;
+      if(gen!==requestGeneration){fail(Error('TTS cancelled'));return;}
+      transfer.attempts++;
+      if(transfer.attempts>MAX_PACKET_ATTEMPTS){
+        fail(Error('Watch did not ACK '+command+' packet '+nextPacketSequence));
+        return;
+      }
+      transfer.timer=setTimeout(attempt,ACK_TIMEOUT_MS);
+      try{
+        Pebble.sendAppMessage(payload,function(){},function(error){
+          if(pendingPacket!==transfer)return;
+          if(transfer.timer)clearTimeout(transfer.timer);
+          transfer.timer=setTimeout(attempt,180*transfer.attempts);
+        });
+      }catch(e){
+        if(transfer.timer)clearTimeout(transfer.timer);
+        transfer.timer=setTimeout(attempt,180*transfer.attempts);
+      }
+    }
+    transfer.ack=function(){
+      if(pendingPacket!==transfer)return;
+      if(transfer.timer)clearTimeout(transfer.timer);
+      pendingPacket=null;
+      nextPacketSequence++;
+      resolve();
+    };
+    transfer.wait=function(){
+      if(pendingPacket!==transfer)return;
+      if(transfer.timer)clearTimeout(transfer.timer);
+      transfer.waits++;
+      if(transfer.waits>150){
+        fail(Error('Watch audio buffer did not drain'));
+        return;
+      }
+      // WAIT is flow control, not a transport retry failure.
+      transfer.attempts=0;
+      transfer.timer=setTimeout(attempt,160);
+    };
+    attempt();
+  });
 }
-function bleAudioAck(bytes,now){
-  bleFlowSent+=bytes;
-  if(!bleFlowStartedAt && bleFlowSent>=BLE_PREBUFFER_BYTES)
-    bleFlowStartedAt=now;
+function handleWatchAck(payload){
+  if(!payload || (payload.COMMAND!=='AUDIO_ACK' &&
+                  payload.COMMAND!=='AUDIO_WAIT'))return false;
+  var transfer=pendingPacket;
+  if(!transfer||transfer.gen!==requestGeneration)return true;
+  if(String(payload.TEXT||'')!==transfer.tag)return true;
+  if(payload.COMMAND==='AUDIO_ACK')transfer.ack();
+  else transfer.wait();
+  return true;
 }
-function startBLESendLoop() {
-  if (isSendingBLE) return; 
-  if (readyAudioQueue.length === 0) {conversationMaybeCompleteAudio();return;} 
-  
-  isSendingBLE = true; 
-  var nextSegment=readyAudioQueue.shift();
-  var endSentence=Array.isArray(nextSegment) || nextSegment.endSentence===true;
-  var adpcmBytes=Array.isArray(nextSegment)?nextSegment:nextSegment.bytes;
-  // Opening a consumer slot lets the producer fetch/encode the next sentence
-  // concurrently with Bluetooth playback. Both connection modes share this.
-  startPluginTTSFetchLoop(requestGeneration);
-  var cursor = 0;
-  var failureCount = 0;
-  var generation = requestGeneration;
-  if(bleFlowGeneration!==generation){
-    bleFlowGeneration=generation;
-    bleFlowSent=0;
-    bleFlowStartedAt=0;
-  }
-  function audioSendFailed() {
-    if(generation!==requestGeneration)return;
-    isSendingBLE=false;
-    readyAudioQueue=[]; sentenceQueue=[]; isFetchingTTS=false;
-    pluginPreparedSentence=null;
+function startBLESendLoop(){
+  if(isSendingBLE)return;
+  if(!readyAudioQueue.length){conversationMaybeCompleteAudio();return;}
+  isSendingBLE=true;
+  var segment=readyAudioQueue.shift();
+  var adpcmBytes=Array.isArray(segment)?segment:segment.bytes;
+  var endSentence=Array.isArray(segment)||segment.endSentence===true;
+  var cursor=0,gen=requestGeneration;
+  // The next speech chunk may be prepared while this one is sent.
+  startPluginTTSFetchLoop(gen);
+  function abort(error){
+    if(gen!==requestGeneration)return;
+    abandonPendingPacket();
+    ++requestGeneration;
+    isSendingBLE=false;isFetchingTTS=false;
+    sentenceQueue=[];readyAudioQueue=[];pluginPreparedSentence=null;
     conversationAudioFinalPending=false;streamEndDeliveryPending=false;
-    ++requestGeneration; // invalidate any queued TTS delivery
-    console.log('Pebble Bluetooth audio delivery failed after retries');
-    if(onError)onError(Error('Bluetooth audio delivery failed'));
-    Pebble.sendAppMessage({COMMAND:'AUDIO_STOP'},function(){},function(){});
-
+    console.log('Pebble watch audio ACK failure: '+String(error&&error.message||error));
+    if(onError)onError(error);
+    Pebble.sendAppMessage({COMMAND:'AUDIO_STOP',TEXT:String(transportId)},
+      function(){},function(){});
   }
-  function sendNextChunk() {
-    if(generation!==requestGeneration)return;
-    var previousCursor = cursor; 
-    var chunk = [];              
-    var chunkSize = 700;         
-
-    for (var i = 0; i < chunkSize && cursor < adpcmBytes.length; i++, cursor++) {
-      chunk.push(adpcmBytes[cursor]); 
+  function sendNextChunk(){
+    if(gen!==requestGeneration)return;
+    if(cursor<adpcmBytes.length){
+      var bytes=adpcmBytes.slice(cursor,cursor+AUDIO_PACKET_BYTES);
+      sendReliablePacket('AUDIO_CHUNK',bytes,gen).then(function(){
+        if(gen!==requestGeneration)return;
+        cursor+=bytes.length;
+        setTimeout(sendNextChunk,0);
+      }).catch(abort);
+      return;
     }
-
-    if (chunk.length > 0) {
-      // Rewind and retry later if transmitting this packet would exceed the
-      // estimated safe send-ahead buffer. This is bounded pacing, not a
-      // fixed per-packet penalty on top of Bluetooth acknowledgement time.
-      var wait=bleAudioWaitMs(chunk.length,Date.now());
-      if(wait>0){
-        cursor=previousCursor;
-        setTimeout(sendNextChunk,Math.max(10,wait));
-        return;
-      }
-      Pebble.sendAppMessage(
-        { 'COMMAND': 'AUDIO_CHUNK', 'CHUNK': chunk },
-        function success() {
-          if(generation!==requestGeneration)return;
-          failureCount=0;
-          bleAudioAck(chunk.length,Date.now());
-          setTimeout(sendNextChunk,10);
-        },
-        function failure() {
-          cursor=previousCursor;
-          if(++failureCount>=5){audioSendFailed();return;}
-          setTimeout(sendNextChunk, 250*failureCount);
-        } 
-      );
-    } else {
-      if(!endSentence){
-        // More verified WAV chunks are still arriving. This is only a
-        // transport segment boundary, not a pause between sentences.
-        isSendingBLE=false;
-        startBLESendLoop();
-        return;
-      }
-      Pebble.sendAppMessage(
-        { 'COMMAND': 'AUDIO_SENTENCE_END' },
-        function() { 
-            isSendingBLE = false; 
-            // No fixed delay between complete spoken sentences: the watch
-            // already has a PCM ring and double buffering to smooth handoff.
-            startBLESendLoop();
-            conversationMaybeCompleteAudio(); 
-        },
-        function() {
-            if(++failureCount>=5){audioSendFailed();return;}
-            setTimeout(sendNextChunk, 250*failureCount);
-        }
-      );
+    if(!endSentence){
+      isSendingBLE=false;
+      startBLESendLoop();
+      conversationMaybeCompleteAudio();
+      return;
     }
+    sendReliablePacket('AUDIO_SENTENCE_END',null,gen).then(function(){
+      if(gen!==requestGeneration)return;
+      isSendingBLE=false;
+      startBLESendLoop();
+      conversationMaybeCompleteAudio();
+    }).catch(abort);
   }
-  sendNextChunk(); 
+  sendNextChunk();
 }
 
     function stop(){
@@ -527,7 +537,9 @@ function startBLESendLoop() {
       sentenceQueue=[];readyAudioQueue=[];pluginPreparedSentence=null;
       isFetchingTTS=false;isSendingBLE=false;
       conversationAudioFinalPending=false;streamEndDeliveryPending=false;
-      Pebble.sendAppMessage({COMMAND:'AUDIO_STOP'},function(){},function(){});
+      abandonPendingPacket();
+      Pebble.sendAppMessage({COMMAND:'AUDIO_STOP',TEXT:String(transportId)},
+        function(){},function(){});
     }
     function speak(text){
       if(typeof text!=='string'||!text.trim())
@@ -538,7 +550,9 @@ function startBLESendLoop() {
       sentenceQueue=[];readyAudioQueue=[];pluginPreparedSentence=null;
       isFetchingTTS=false;isSendingBLE=false;
       js_adpcm_valpred=0;js_adpcm_index=0;
-      bleFlowGeneration=-1;bleFlowSent=0;bleFlowStartedAt=0;
+      abandonPendingPacket();
+      transportId=(Math.floor(Math.random()*2147483646)+1)>>>0;
+      nextPacketSequence=0;
       lastAnswer=text;
       sentenceQueue=[];
       // TTS tts_prepare accepts up to 500 characters. Break up even long
@@ -555,7 +569,7 @@ function startBLESendLoop() {
       });
       conversationAudioFinalPending=true;streamEndDeliveryPending=false;
       return new Promise(function(resolve,reject){
-        Pebble.sendAppMessage({COMMAND:'AUDIO_RESET'},function(){
+        Pebble.sendAppMessage({COMMAND:'AUDIO_RESET',TEXT:String(transportId)},function(){
           if(gen!==requestGeneration){reject(Error('Cancelled'));return;}
           startPluginTTSFetchLoop(gen);
           resolve();
@@ -563,6 +577,7 @@ function startBLESendLoop() {
       });
     }
     function handleMessage(payload){
+      if(handleWatchAck(payload))return true;
       if(!payload||payload.COMMAND!=='AUDIO_STATS')return false;
       var stats={timestamp:new Date().toISOString()};
       String(payload.TEXT||'').split(',').forEach(function(pair){
