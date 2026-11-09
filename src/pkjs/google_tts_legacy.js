@@ -79,7 +79,7 @@ function canonicalWav(inputBase64){
 function create(options){
   options=options||{};
   var Pebble=options.Pebble,UniversalTts=options.UniversalTts;
-  var request=options.fetch||fetch;
+  var request=options.fetch||(typeof fetch==='function'?fetch:null);
   var getKey=options.getKey||function(){return '';};
   var getVoice=options.getVoice||function(){return 'en-US-Wavenet-F';};
   var saveVoice=options.saveVoice||function(){};
@@ -91,6 +91,7 @@ function create(options){
     });
   }
   function synthesize(text,voice,fallback){
+    if(!request)return Promise.reject(Error('Direct Google TTS requires network access'));
     var key=String(getKey()||'');
     if(!key.trim())return Promise.reject(Error('Missing Direct Google TTS key. Open WISP settings.'));
     var url='https://texttospeech.googleapis.com/v1/text:synthesize?key='+encodeURIComponent(key);
@@ -176,7 +177,8 @@ function create(options){
   return {
     speak:function(text){return sdk.speak(text);},
     stop:function(){sdk.stop();sessions={};},
-    diagnostics:function(){return sdk.diagnostics();}
+    diagnostics:function(){return sdk.diagnostics();},
+    handleMessage:function(payload){return sdk.handleMessage(payload);}
   };
 }
 module.exports={create:create,canonicalWav:canonicalWav,encode64:encode64,decode64:decode64,fnv:fnv};
