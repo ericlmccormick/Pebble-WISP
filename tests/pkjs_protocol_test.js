@@ -75,7 +75,7 @@ async function ask(text,speaker=1,volume=100){
   assert.ok(out.some(x=>x.COMMAND==='TEXT_RESPONSE_NO_AUDIO'));
   assert.equal(spoken.length,count);
 
-  assert.ok(stops.length>=4,'new questions must stop previous Universal TTS speech');
+  assert.ok(stops.length>=3,'new questions stop active Universal TTS speech, not silent sessions');
   // Legacy direct must use a separate Google TTS instance, not require the plugin.
   ctx.ttsBackend='direct';
   ctx.ttsApiKey='old-existing-google-key';
