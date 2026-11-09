@@ -6,7 +6,7 @@ const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../package.json')
 const agentUUID='2c5edc42-b096-4f76-b284-1f27907e6501';
 const ttsUUID='2c5edc42-b096-4f76-b284-1f27907e6502';
 const store={GEMINI_BACKEND:'agent:'+agentUUID,TTS_BACKEND:'plugin',TTS_PROVIDER_MIGRATED_V2:'true'};
-const listeners={},sent=[],spoken=[],stops=[];
+const listeners={},sent=[],spoken=[],stops=[],directSpoken=[],directStops=[];
 let aiResponse={ok:true,text:'Hello from WISP',received:true,status:'completed',reply_type:'assistant',provider:'gemini'};
 const Pebble={
   enumeratePlugins:()=>[{uuid:agentUUID,name:'AI Conversation',actions:[{name:'send_to_agent'}]}],
@@ -27,9 +27,14 @@ const fakeTts={create:({pluginId})=>{
   return {speak:text=>{spoken.push(text);return Promise.resolve();},
     stop:()=>stops.push(true),handleMessage:()=>false};
 }};
+const fakeLegacy={create:()=>({
+  speak:text=>{directSpoken.push(text);return Promise.resolve();},
+  stop:()=>directStops.push(true),handleMessage:()=>false
+})};
 const ctx={Pebble,localStorage:{getItem:k=>Object.prototype.hasOwnProperty.call(store,k)?store[k]:null,
   setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>delete store[k]},
   require:name=>name==='./universal_tts'?fakeTts:
+    name==='./google_tts_legacy'?fakeLegacy:
     name==='./agent_plugins'?require('../src/pkjs/agent_plugins'):Clay,
   console,Date,Math,JSON,Promise,isFinite,Number,parseInt,parseFloat,
   setTimeout,clearTimeout,decodeURIComponent,encodeURIComponent};
@@ -70,7 +75,23 @@ async function ask(text,speaker=1,volume=100){
   assert.ok(out.some(x=>x.COMMAND==='TEXT_RESPONSE_NO_AUDIO'));
   assert.equal(spoken.length,count);
 
-  assert.ok(stops.length>=5,'new questions must stop the previous speech stream');
+  assert.ok(stops.length>=4,'new questions must stop previous Universal TTS speech');
+  // Legacy direct must use a separate Google TTS instance, not require the plugin.
+  ctx.ttsBackend='direct';
+  ctx.ttsApiKey='old-existing-google-key';
+  aiResponse={ok:true,text:'Legacy Google speech still works'};
+  out=await ask('Legacy speech');
+  assert.ok(out.some(x=>x.COMMAND==='TEXT_RESPONSE_8_16'&&
+    x.TEXT==='Legacy Google speech still works'));
+  assert.equal(directSpoken.at(-1),'Legacy Google speech still works');
+  assert.equal(spoken.at(-1),shown.TEXT,'direct mode must not invoke the Universal plugin');
+
+  ctx.ttsBackend='plugin';
+  aiResponse={ok:true,text:'Plugin speech still works'};
+  out=await ask('Plugin speech');
+  assert.equal(spoken.at(-1),'Plugin speech still works');
+  assert.ok(directStops.length>0,'transition must cancel the legacy direct stream');
+
   assert.match(source,/universalTts\.speak\(displayText\)/);
   assert.doesNotMatch(source,/googleTtsStream\.stream/);
   assert.doesNotMatch(source,/function startBLESendLoop/);
@@ -87,8 +108,8 @@ async function ask(text,speaker=1,volume=100){
   assert.deepEqual(manifest.pebble.targetPlatforms.slice().sort(),
     ['basalt','chalk','diorite','flint','emery','gabbro'].sort());
 
-  // Settings migration keeps an explicit text-only opt-out and removes old
-  // app-stored speech credentials.
+  // Compatibility migration must never delete or silently switch existing
+  // Gemini with Voice Direct Google TTS settings.
   const fn=source.slice(source.indexOf('function migrateSpeechProvider(){'),
      source.indexOf('var ttsBackend=migrateSpeechProvider();')+
        'var ttsBackend=migrateSpeechProvider();'.length);
@@ -99,11 +120,18 @@ async function ask(text,speaker=1,volume=100){
     vm.runInNewContext(fn,target);
     return {provider:target.ttsBackend,local};
   }
-  assert.equal(migrate({TTS_BACKEND:'direct',TTS_API_KEY:'key'}).provider,'plugin');
+  assert.equal(migrate({TTS_BACKEND:'direct',TTS_API_KEY:'key'}).provider,'direct');
+  assert.equal(migrate({TTS_API_KEY:'old-key'}).provider,'direct');
+  assert.equal(migrate({}).provider,'plugin');
   assert.equal(migrate({TTS_BACKEND:'none'}).provider,'none');
   assert.equal(migrate({TTS_BACKEND:'plugin',ENABLE_TTS:'false'}).provider,'none');
   assert.equal(migrate({TTS_BACKEND:'plugin',ENABLE_TTS:'false',
     TTS_PROVIDER_MIGRATED_V2:'true'}).provider,'plugin');
-  assert.equal(migrate({TTS_BACKEND:'direct',TTS_API_KEY:'key'}).local.TTS_API_KEY,undefined);
-  console.log('PASS: displayed text -> Universal TTS, receipt speech, opt-out, truncation, watch SDK and permissions');
+  const legacy=migrate({TTS_BACKEND:'direct',TTS_API_KEY:'old-key',
+    TTS_VOICE:'en-US-Neural2-F'});
+  assert.equal(legacy.local.TTS_API_KEY,'old-key');
+  assert.equal(legacy.local.TTS_VOICE,'en-US-Neural2-F');
+  assert.equal(legacy.local.TTS_BACKEND,'direct');
+  assert.equal(migrate({TTS_BACKEND:'none',TTS_API_KEY:'old-key'}).provider,'none');
+  console.log('PASS: Universal and direct Google TTS both speak displayed text; preserves legacy keys, voices and opt-out');
 })().catch(e=>{console.error(e);process.exitCode=1;});
