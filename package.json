@@ -248,14 +248,15 @@
     "watchapp": {
       "watchface": false
     },
-    "version": "2.2.0",
+    "version": "2.2.1",
     "manifestVersion": 2,
     "usesPermissions": [
       {
         "name": "Internet",
         "parameters": {
           "domains": [
-            "generativelanguage.googleapis.com"
+            "generativelanguage.googleapis.com",
+            "texttospeech.googleapis.com"
           ]
         }
       },
@@ -299,5 +300,5 @@
       }
     ]
   },
-  "version": "2.2.0"
+  "version": "2.2.1"
 }
