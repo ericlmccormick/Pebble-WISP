@@ -1,23 +1,9 @@
-# WISP plugin integration (2.2)
+# WISP plugin integration — restored verified audio transport (2.2.4)
 
-WISP uses two distinct plugins, each configured by the user:
+WISP uses the installed-agent list to populate the conversation agent selector and `send_to_agent` actions. The [AI Conversation plugin](https://github.com/ericlmccormick/Pebble-AI-Conversation) retains its original UUID, so its repository rename does not change the wire-level action contract.
 
-1. AI Conversation or another installed `send_to_agent({message})` provider returns the text. WISP does not demand specific reply metadata before displaying and speaking text. Errors are distinct from successful text.
-2. Universal TTS (`2c5edc42-b096-4f76-b284-1f27907e6502`) synthesizes *the exact displayed text* via its standard SDK. WISP declares `InvokeAction` and `UniversalTtsSpeak`. Universal TTS owns provider, voice and credentials. WISP does not call vendors directly for speech.
+For speech, [Universal TTS](https://github.com/ericlmccormick/Pebble-Universal-TTS) retains the Google Cloud TTS plugin UUID `2c5edc42-b096-4f76-b284-1f27907e6502` and exposes the existing `tts_prepare`, `tts_chunk`, `tts_release` streaming interface. WISP 2.2.4 calls those actions through the restored `src/pkjs/google_tts_stream.js` adapter, which validates WAV chunks/checksums and uses WISP's original phone-to-watch audio protocol. The "Google" name in the adapter filename describes its historical origin, not a Google-only speech provider; actual provider, voice and credentials are owned by Universal TTS.
 
-Phone: `universalTts.speak(displayText)`, `universalTts.stop()`, `universalTts.handleMessage(dict)`.
-Watch: `universal_tts_init()`, `universal_tts_handle_message(iterator)`, `universal_tts_stop()`, `universal_tts_set_volume()`, `universal_tts_deinit()`.
+`src/pkjs/index.js` also supports `TTS_BACKEND=direct` and the original Google Cloud TTS API key/voice settings. Direct Google TTS and Universal TTS converge only after PCM verification/ADPCM encoding. On the watch, `src/c/main.c` contains the original tested playback system. No separate Universal TTS SDK audio receiver is compiled.
 
-The app delivers `TEXT_RESPONSE_8_16` to the watch first. The send acknowledgment triggers the SDK speech request; the SDK resets the watch audio and streams verified audio. `TEXT_RESPONSE_NO_AUDIO` is used for disabled voice or diagnostic errors. The display is not dependent on audio service success.
-
-The TTS SDK automatically splits long answers into <=480-character segments. No direct TTS API keys, Google voice lists, or app-specific ADPCM/BLE framing remain in WISP. On watches without speakers, speech is skipped. 
-
-The canonical repository is https://github.com/ericlmccormick/Pebble-WISP and the Universal TTS SDK originates at https://github.com/ericlmccormick/Pebble-Universal-TTS.
-
-## Backward compatibility: Google direct speech
-
-WISP 2.2.1 supports three speech choices: `plugin` (Universal TTS), `direct` (legacy Google Cloud TTS using the original app-held API key and voice), and `none`. On upgrade, preserve `TTS_BACKEND`, `TTS_API_KEY`, and `TTS_VOICE`; never silently migrate an existing direct setup to plugin mode or delete an app-level key.
-
-The direct adapter at `src/pkjs/google_tts_legacy.js` uses the original Google REST TTS endpoint and API key, converts the PCM16 WAV response to the verified canonical 8kHz format expected by the shared Universal TTS SDK, and exposes local `tts_prepare`/`tts_chunk`/`tts_release` actions via a compatibility façade. It does **not** invoke or depend on the Universal TTS phone plugin when Direct Google TTS is selected; the SDK's phone-to-watch audio transport is reused. Existing Google voices and invalid-voice fallback are maintained. The app includes `texttospeech.googleapis.com` in its Internet permission.
-
-WISP 2.2.0 deleted direct TTS keys during initialization, so already-deleted values may need manual re-entry; this release does not claim to recover them.
+This is a deliberate transport rollback to the known-good WISP 2.1.6 source, retaining the visual WISP app and current plugin repository names. To preserve existing setups, do not migrate `TTS_BACKEND`, erase local credentials or change the watchapp UUID. Tests from the known-good branch protect sentence buffering, watch acknowledgements and the settings UI.
