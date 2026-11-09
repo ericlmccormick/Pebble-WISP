@@ -248,15 +248,14 @@
     "watchapp": {
       "watchface": false
     },
-    "version": "2.1.6",
+    "version": "2.2.0",
     "manifestVersion": 2,
     "usesPermissions": [
       {
         "name": "Internet",
         "parameters": {
           "domains": [
-            "generativelanguage.googleapis.com",
-            "texttospeech.googleapis.com"
+            "generativelanguage.googleapis.com"
           ]
         }
       },
@@ -266,7 +265,7 @@
         "plugin": "2c5edc42-b096-4f76-b284-1f27907e6501"
       },
       {
-        "name": "GoogleTtsSpeak",
+        "name": "UniversalTtsSpeak",
         "plugin": "2c5edc42-b096-4f76-b284-1f27907e6502"
       },
       {
@@ -300,5 +299,5 @@
       }
     ]
   },
-  "version": "2.1.6"
+  "version": "2.2.0"
 }
