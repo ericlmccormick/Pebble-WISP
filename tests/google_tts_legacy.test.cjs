@@ -42,8 +42,11 @@ const synthFetch=async(url,options)=>{
   actions.push({url,body});
   return {ok:true,json:async()=>({audioContent:withList.toString('base64')})};
 };
+const memory=new Map();
+const storage={getItem:key=>memory.get(key)||null,
+  setItem:(key,value)=>memory.set(key,String(value))};
 const tts=legacy.create({
-  Pebble,UniversalTts,fetch:synthFetch,
+  Pebble,UniversalTts,fetch:synthFetch,storage,
   getKey:()=>key,getVoice:()=>voice,
   saveVoice:value=>{fallbackVoice=value;voice=value;},
   onComplete:()=>{if(currentResolve)currentResolve();},
