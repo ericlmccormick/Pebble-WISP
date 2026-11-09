@@ -351,7 +351,14 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   if (!command_tuple) return;
   // The shared Universal TTS SDK is the sole receiver for AUDIO_RESET,
   // AUDIO_CHUNK, AUDIO_SENTENCE_END and AUDIO_STOP.
-  if (universal_tts_handle_message(iterator)) return;
+  if (universal_tts_handle_message(iterator)) {
+    // The first verified audio packet means the buffering handoff started.
+    // The shared SDK does not own WISP's status layer.
+    if (strcmp(command_tuple->value->cstring,"AUDIO_CHUNK")==0 ||
+        strcmp(command_tuple->value->cstring,"AUDIO_STOP")==0)
+      set_status(NULL);
+    return;
+  }
   if (strcmp(command_tuple->value->cstring,"AUDIO_STATS")==0) {
     set_status(NULL);
     return;
