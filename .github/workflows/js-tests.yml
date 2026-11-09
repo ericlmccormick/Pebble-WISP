@@ -22,6 +22,7 @@ jobs:
           node --check tests/google_tts_legacy.test.cjs
           node --check tests/universal_tts_integration.test.cjs
           node --check tests/universal_tts_stream_lifecycle.test.cjs
+          node --check tests/long_audio_reliability.test.cjs
           node --check tests/plugin_settings_ui.test.cjs
           node --check src/pkjs/agent_plugins.js
           node --check tests/agent_plugins.test.cjs
@@ -34,6 +35,7 @@ jobs:
           node tests/pkjs_protocol_test.js
           node tests/universal_tts_integration.test.cjs
           node tests/universal_tts_stream_lifecycle.test.cjs
+          node tests/long_audio_reliability.test.cjs
           node tests/google_tts_legacy.test.cjs
           node tests/plugin_settings_ui.test.cjs
           node tests/agent_plugins.test.cjs
