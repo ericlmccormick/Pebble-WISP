@@ -13,14 +13,17 @@
 #define PLAYBACK_PCM_SAMPLES (PLAYBACK_ADPCM_BYTES * 2)
 #define PLAYBACK_INTERVAL_MS 200
 #define START_BUFFER_THRESHOLD 2800
-#define STREAM_CLOSE_DELAY_MS 1500
+#define STREAM_CLOSE_DELAY_MS 1000
+#define STREAM_IDLE_FAILSAFE_MS 30000
 static float s_volume=1.0f;
   static uint8_t s_ring_buffer[RING_BUFFER_SIZE]; 
   static uint32_t s_head = 0;                   
   static uint32_t s_tail = 0;                   
   static uint32_t s_buffer_count = 0;           
   static AppTimer *s_playback_timer = NULL;     
-  static AppTimer *s_stream_close_timer = NULL; 
+  static AppTimer *s_stream_close_timer = NULL;
+  static AppTimer *s_stream_idle_timer = NULL;
+  static bool s_stream_end_received = false;
   static bool s_speaker_open = false;
   // Preserve PCM bytes rejected by a full speaker queue; never drop a partial write.
   // Ping-pong PCM frames: while one frame drains into the speaker stream,
@@ -89,8 +92,10 @@ static float s_volume=1.0f;
     return (int16_t)(s_adpcm_valpred * s_volume);
   }
 
-  static void playback_timer_callback(void *data); 
-  static void delayed_close_callback(void *data);  
+  static void playback_timer_callback(void *data);
+  static void delayed_close_callback(void *data);
+  static void stream_idle_callback(void *data);
+  static void start_playback(void);
 
   static void cancel_close_timer() {
     if (s_stream_close_timer) {
@@ -99,10 +104,34 @@ static float s_volume=1.0f;
     }
   }
 
+  // A temporary BLE or synthesis gap is NOT the end of a spoken response.
+  // The sender explicitly terminates the stream with AUDIO_STREAM_END.
   static void schedule_close_timer() {
-    if (!s_stream_close_timer) {
-      s_stream_close_timer = app_timer_register(STREAM_CLOSE_DELAY_MS, delayed_close_callback, NULL); 
+    if (s_stream_end_received && !s_stream_close_timer) {
+      s_stream_close_timer = app_timer_register(STREAM_CLOSE_DELAY_MS, delayed_close_callback, NULL);
     }
+  }
+  static void cancel_idle_timer(void) {
+    if (s_stream_idle_timer) {
+      app_timer_cancel(s_stream_idle_timer);
+      s_stream_idle_timer = NULL;
+    }
+  }
+  static void reset_idle_timer(void) {
+    cancel_idle_timer();
+    if (!s_stream_end_received)
+      s_stream_idle_timer = app_timer_register(STREAM_IDLE_FAILSAFE_MS, stream_idle_callback, NULL);
+  }
+  // Guard against a genuinely disconnected phone without prematurely closing
+  // the speaker during normal in-flight WAV chunks or sentence synthesis.
+  static void stream_idle_callback(void *data) {
+    s_stream_idle_timer = NULL;
+    if (s_stream_end_received || s_ignore_audio) return;
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Universal TTS stalled: no audio packet for 30s");
+    s_stream_end_received = true;
+    if (s_buffer_count && !s_speaker_open) start_playback();
+    if (s_speaker_open && !s_buffer_count && !s_pcm_queued)
+      schedule_close_timer();
   }
 
   static void report_audio_stats(void) {
@@ -120,7 +149,8 @@ static float s_volume=1.0f;
   }
   static void delayed_close_callback(void *data) {
     s_stream_close_timer = NULL;                
-    if (s_buffer_count == 0 && s_pcm_queued == 0 && s_speaker_open) { 
+    if (s_stream_end_received && s_buffer_count == 0 &&
+        s_pcm_queued == 0 && s_pending_offset == 0 && s_speaker_open) { 
       speaker_stream_close();                   
       s_speaker_open = false;
       if(s_audio_frame_written)report_audio_stats();
@@ -213,6 +243,9 @@ static float s_volume=1.0f;
         }
         s_audio_empty_ms+=20;
       }
+      // Do not close after a 1.5s Bluetooth pause; the next verified
+      // chunks may still be on their way. Only the explicit stream end can
+      // permit a normal close.
       schedule_close_timer();
       s_playback_timer=app_timer_register(20,playback_timer_callback,NULL);
       return;
@@ -255,7 +288,9 @@ static float s_volume=1.0f;
       app_timer_cancel(s_playback_timer);       
       s_playback_timer = NULL;                  
     }
-    cancel_close_timer();                       
+    cancel_close_timer();
+    cancel_idle_timer();
+    s_stream_end_received = false;
     s_buffer_count = 0;                         
     s_head = 0;                                 
     s_tail = 0;                                 
@@ -298,6 +333,7 @@ bool universal_tts_handle_message(DictionaryIterator *iter){
   if(!strcmp(c,"AUDIO_STOP")){universal_tts_stop();return true;}
   if(!strcmp(c,"AUDIO_CHUNK")){
     if(s_ignore_audio)return true;
+    reset_idle_timer();
     Tuple *payload=dict_find(iter,MESSAGE_KEY_CHUNK);
     if(payload && payload->length){
       push_to_ring_buffer(payload->value->data,payload->length);
@@ -308,8 +344,19 @@ bool universal_tts_handle_message(DictionaryIterator *iter){
   }
   if(!strcmp(c,"AUDIO_SENTENCE_END")){
     if(s_ignore_audio)return true;
+    reset_idle_timer();
     s_sentence_end_pending=s_buffer_count>0;
     if(!s_speaker_open && s_buffer_count>0)start_playback();
+    return true;
+  }
+  if(!strcmp(c,"AUDIO_STREAM_END")){
+    if(s_ignore_audio)return true;
+    s_stream_end_received=true;
+    cancel_idle_timer();
+    s_sentence_end_pending=s_buffer_count>0;
+    if(!s_speaker_open && s_buffer_count>0)start_playback();
+    if(s_speaker_open && s_buffer_count==0 && s_pcm_queued==0)
+      schedule_close_timer();
     return true;
   }
   return false;
