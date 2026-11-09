@@ -92,7 +92,7 @@ async function ask(text,speaker=1,volume=100){
   assert.equal(spoken.at(-1),'Plugin speech still works');
   assert.ok(directStops.length>0,'transition must cancel the legacy direct stream');
 
-  assert.match(source,/universalTts\.speak\(displayText\)/);
+  assert.match(source,/engine\.speak\(displayText\)/);
   assert.doesNotMatch(source,/googleTtsStream\.stream/);
   assert.doesNotMatch(source,/function startBLESendLoop/);
 
