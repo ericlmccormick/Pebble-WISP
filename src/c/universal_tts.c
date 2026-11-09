@@ -125,6 +125,7 @@ static float s_volume=1.0f;
   // Guard against a genuinely disconnected phone without prematurely closing
   // the speaker during normal in-flight WAV chunks or sentence synthesis.
   static void stream_idle_callback(void *data) {
+    (void)data;
     s_stream_idle_timer = NULL;
     if (s_stream_end_received || s_ignore_audio) return;
     APP_LOG(APP_LOG_LEVEL_WARNING, "Universal TTS stalled: no audio packet for 30s");
@@ -148,6 +149,7 @@ static float s_volume=1.0f;
     app_message_outbox_send();
   }
   static void delayed_close_callback(void *data) {
+    (void)data;
     s_stream_close_timer = NULL;                
     if (s_stream_end_received && s_buffer_count == 0 &&
         s_pcm_queued == 0 && s_pending_offset == 0 && s_speaker_open) { 
@@ -230,6 +232,7 @@ static float s_volume=1.0f;
   }
 
   static void playback_timer_callback(void *data) {
+    (void)data;
     s_playback_timer=NULL;
     if(!s_speaker_open)return;
     // Preserve any partially accepted PCM. Decode into the alternate frame
