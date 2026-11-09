@@ -249,7 +249,11 @@ function apiErrorMessage(error, service) {
 
 var js_adpcm_valpred = 0;  
 var js_adpcm_index = 0;
-var googleTtsStream=GoogleTtsStream.create({Pebble:Pebble,pluginId:GOOGLE_TTS_PLUGIN_UUID,encodeADPCM:encodeADPCM});
+// Old Direct-Gemini/Direct-Google users must still launch on Pebble phone
+// versions without the plugin invokeAction API. Only plugin speech needs it.
+var googleTtsStream=typeof Pebble.invokeAction==='function'?
+  GoogleTtsStream.create({Pebble:Pebble,pluginId:GOOGLE_TTS_PLUGIN_UUID,encodeADPCM:encodeADPCM}):
+  {stream:function(){return Promise.reject(Error('Universal TTS needs a plugin-capable Pebble phone app'));}};
 
 
 // =========================================================================
