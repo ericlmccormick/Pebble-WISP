@@ -21,7 +21,7 @@ struct AppTimer {
 };
 typedef struct {char cstring[256]; uint8_t data[1024];} TupleValue;
 typedef struct {int type; uint16_t length; TupleValue *value;} Tuple;
-typedef struct {Tuple *command;Tuple *chunk;} DictionaryIterator;
+typedef struct {Tuple *command;Tuple *chunk;Tuple *text;} DictionaryIterator;
 typedef enum {SpeakerPcmFormat_8kHz_16bit=2} SpeakerPcmFormat;
 AppTimer *app_timer_register(uint32_t delay,void(*cb)(void*),void *data);
 void app_timer_cancel(AppTimer *timer);
