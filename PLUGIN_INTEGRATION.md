@@ -13,3 +13,11 @@ The app delivers `TEXT_RESPONSE_8_16` to the watch first. The send acknowledgmen
 The TTS SDK automatically splits long answers into <=480-character segments. No direct TTS API keys, Google voice lists, or app-specific ADPCM/BLE framing remain in WISP. On watches without speakers, speech is skipped. 
 
 The canonical repository is https://github.com/ericlmccormick/Pebble-WISP and the Universal TTS SDK originates at https://github.com/ericlmccormick/Pebble-Universal-TTS.
+
+## Backward compatibility: Google direct speech
+
+WISP 2.2.1 supports three speech choices: `plugin` (Universal TTS), `direct` (legacy Google Cloud TTS using the original app-held API key and voice), and `none`. On upgrade, preserve `TTS_BACKEND`, `TTS_API_KEY`, and `TTS_VOICE`; never silently migrate an existing direct setup to plugin mode or delete an app-level key.
+
+The direct adapter at `src/pkjs/google_tts_legacy.js` uses the original Google REST TTS endpoint and API key, converts the PCM16 WAV response to the verified canonical 8kHz format expected by the shared Universal TTS SDK, and exposes local `tts_prepare`/`tts_chunk`/`tts_release` actions via a compatibility façade. It does **not** invoke or depend on the Universal TTS phone plugin when Direct Google TTS is selected; the SDK's phone-to-watch audio transport is reused. Existing Google voices and invalid-voice fallback are maintained. The app includes `texttospeech.googleapis.com` in its Internet permission.
+
+WISP 2.2.0 deleted direct TTS keys during initialization, so already-deleted values may need manual re-entry; this release does not claim to recover them.
