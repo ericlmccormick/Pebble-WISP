@@ -6,6 +6,7 @@ var Clay = require('@rebble/clay');
 var GEMINI_PLUGIN_UUID='2c5edc42-b096-4f76-b284-1f27907e6501';
 var UNIVERSAL_TTS_PLUGIN_UUID='2c5edc42-b096-4f76-b284-1f27907e6502';
 var UniversalTts=require('./universal_tts');
+var GoogleTtsLegacy=require('./google_tts_legacy');
 var AgentPlugins=require('./agent_plugins');
 function useStoredBackend(key,hasLegacyKey){return localStorage.getItem(key)||(hasLegacyKey?'direct':'plugin');}
 
@@ -14,20 +15,21 @@ function useStoredBackend(key,hasLegacyKey){return localStorage.getItem(key)||(h
 // SECTION 2: STORAGE MEMORY RECOVERY & TOGGLE LOGIC
 // =========================================================================
 
-var geminiApiKey = localStorage.getItem("GEMINI_API_KEY") || ""; 
+var geminiApiKey = localStorage.getItem("GEMINI_API_KEY") || "";
+var ttsApiKey = localStorage.getItem("TTS_API_KEY") || ""; 
 var geminiBackend=useStoredBackend('GEMINI_BACKEND',!!geminiApiKey);
 if(geminiBackend==='plugin'){geminiBackend=AgentPlugins.agentId();localStorage.setItem('GEMINI_BACKEND',geminiBackend);}
-// Preserve the old explicit opt-out, but move Google direct speech to
-// Universal TTS. Provider, credentials and voices now live in the plugin.
+// Never silently switch existing Gemini-with-Voice Direct Google TTS users.
+ // Preserve TTS_BACKEND, TTS_API_KEY, TTS_VOICE and opt-out in localStorage.
 function migrateSpeechProvider(){
   var provider=localStorage.getItem('TTS_BACKEND');
   var oldToggle=localStorage.getItem('ENABLE_TTS');
-  if(localStorage.getItem('TTS_PROVIDER_MIGRATED_V2')!=='true'&&oldToggle==='false')provider='none';
-  provider=provider==='none'?'none':'plugin';
+  var migrated=localStorage.getItem('TTS_PROVIDER_MIGRATED_V2')==='true';
+  if(!migrated && oldToggle==='false')provider='none';
+  if(provider!=='none'&&provider!=='direct'&&provider!=='plugin')
+    provider=ttsApiKey?'direct':'plugin';
   localStorage.setItem('TTS_BACKEND',provider);
   localStorage.setItem('TTS_PROVIDER_MIGRATED_V2','true');
-  localStorage.removeItem('TTS_API_KEY');
-  localStorage.removeItem('TTS_VOICE');
   return provider;
 }
 var ttsBackend=migrateSpeechProvider();
@@ -95,7 +97,29 @@ var customPersona = localStorage.getItem("CUSTOM_PERSONA") || "";
 
 // Restore dynamic dropdown configurations with updated default
 var geminiModel = localStorage.getItem("GEMINI_MODEL") || "gemini-3.8-flash"; 
-// Universal TTS owns all voice and model settings.
+// Legacy Direct Google TTS retains the original app-level voice selection.
+var ttsVoice=localStorage.getItem('TTS_VOICE')||'en-US-Wavenet-F';
+var TTS_VOICE_ALIASES={
+  'en-US-Chirp3-HD-F':'en-US-Chirp3-HD-Kore',
+  'en-US-Chirp3-HD-M':'en-US-Chirp3-HD-Charon',
+  'en-US-Studio-O':'en-US-Wavenet-F',
+  'en-US-Studio-M':'en-US-Wavenet-D',
+  'en-US-Journey-F':'en-US-Wavenet-F',
+  'en-US-Journey-D':'en-US-Wavenet-D'
+};
+var SUPPORTED_TTS_VOICES=[
+  'en-US-Wavenet-C','en-US-Wavenet-D','en-US-Wavenet-F',
+  'en-US-Neural2-C','en-US-Neural2-D','en-US-Neural2-F',
+  'en-US-Chirp3-HD-Kore','en-US-Chirp3-HD-Aoede','en-US-Chirp3-HD-Leda',
+  'en-US-Chirp3-HD-Zephyr','en-US-Chirp3-HD-Charon','en-US-Chirp3-HD-Puck'
+];
+function normalizeTtsVoice(name){
+  var migrated=TTS_VOICE_ALIASES[name]||name;
+  return SUPPORTED_TTS_VOICES.indexOf(migrated)>=0?migrated:'en-US-Wavenet-F';
+}
+ttsVoice=normalizeTtsVoice(ttsVoice);
+// Do not erase a legacy voice on switching to Universal TTS.
+if(localStorage.getItem('TTS_VOICE'))localStorage.setItem('TTS_VOICE',ttsVoice);
 // The TTS_BACKEND setting alone determines whether speech is enabled.
 
 // =========================================================================
@@ -207,6 +231,23 @@ function apiErrorMessage(error, service) {
 }
   
 
+var activeSpeechBackend=null;
+var legacyGoogleTts=GoogleTtsLegacy.create({
+  Pebble:Pebble,
+  UniversalTts:UniversalTts,
+  storage:localStorage,
+  getKey:function(){return ttsApiKey;},
+  getVoice:function(){return ttsVoice;},
+  saveVoice:function(name){
+    ttsVoice=normalizeTtsVoice(name);
+    localStorage.setItem('TTS_VOICE',ttsVoice);
+  },
+  onError:function(error){
+    console.log('Direct Google TTS failed:',String(error&&error.message||error));
+    Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
+  },
+  onComplete:function(){console.log('Direct Google TTS transfer complete');}
+});
 var universalTts=UniversalTts.create({
   Pebble:Pebble,
   pluginId:UNIVERSAL_TTS_PLUGIN_UUID,
@@ -259,14 +300,42 @@ var apiKeysItems = [
     ]
   }
 ];
-// One universal voice plugin; it owns the voice, provider and API key.
+// New users use Universal TTS; existing direct users keep their credentials.
 apiKeysItems.push({
   type:'select',messageKey:'TTS_BACKEND',label:'Spoken responses',
   defaultValue:ttsBackend,
-  description:'Configure the speech service, voice, and key in Universal TTS.',
+  description:'Universal TTS owns its provider and voice. Direct Google TTS is retained for existing Gemini with Voice users.',
   options:[
     {label:'Universal TTS plugin (recommended)',value:'plugin'},
+    {label:'Direct Google Cloud TTS (legacy)',value:'direct'},
     {label:'None — text only',value:'none'}
+  ]
+});
+apiKeysItems.push({
+  type:'input',messageKey:'TTS_API_KEY',label:'Google Cloud TTS API key (direct legacy)',
+  description:ttsApiKey?'Existing legacy key saved. Leave blank to keep it.':'Required for direct Google TTS only. Leave blank to keep an existing key.',
+  attributes:{
+    type:'password',autocorrect:'off',autocapitalize:'off',
+    placeholder:ttsApiKey?'Existing key saved':'Paste Google Cloud TTS API key'
+  }
+});
+apiKeysItems.push({
+  type:'select',messageKey:'TTS_VOICE',label:'Google TTS voice (direct legacy)',
+  defaultValue:ttsVoice,
+  description:'Only for Direct Google TTS. Universal TTS voice settings are in the plugin.',
+  options:[
+    {label:'WaveNet F',value:'en-US-Wavenet-F'},
+    {label:'WaveNet C',value:'en-US-Wavenet-C'},
+    {label:'WaveNet D',value:'en-US-Wavenet-D'},
+    {label:'Neural2 F',value:'en-US-Neural2-F'},
+    {label:'Neural2 C',value:'en-US-Neural2-C'},
+    {label:'Neural2 D',value:'en-US-Neural2-D'},
+    {label:'Chirp 3 HD Kore',value:'en-US-Chirp3-HD-Kore'},
+    {label:'Chirp 3 HD Aoede',value:'en-US-Chirp3-HD-Aoede'},
+    {label:'Chirp 3 HD Leda',value:'en-US-Chirp3-HD-Leda'},
+    {label:'Chirp 3 HD Zephyr',value:'en-US-Chirp3-HD-Zephyr'},
+    {label:'Chirp 3 HD Charon',value:'en-US-Chirp3-HD-Charon'},
+    {label:'Chirp 3 HD Puck',value:'en-US-Chirp3-HD-Puck'}
   ]
 });
 
@@ -361,14 +430,15 @@ function customClay() {
 
   function updateVisibility() {
     var geminiLegacy = String(fieldValue('GEMINI_BACKEND', 'plugin')) === 'direct';
-
-    // Plugin-owned keys, model and voice must be configured in their plugins.
+    var ttsLegacy = String(fieldValue('TTS_BACKEND', 'plugin')) === 'direct';
     fieldVisible('GEMINI_API_KEY', geminiLegacy);
     fieldVisible('GEMINI_MODEL', geminiLegacy);
+    fieldVisible('TTS_API_KEY', ttsLegacy);
+    fieldVisible('TTS_VOICE', ttsLegacy);
   }
 
   page.on(page.EVENTS.AFTER_BUILD, function() {
-    ['GEMINI_BACKEND'].forEach(function(key) {
+    ['GEMINI_BACKEND','TTS_BACKEND'].forEach(function(key) {
       var field = page.getItemByMessageKey(key);
       if (field) field.on('change', updateVisibility);
     });
@@ -409,6 +479,7 @@ Pebble.addEventListener('showConfiguration', function() {
     GEMINI_BACKEND: geminiBackend,
     TTS_BACKEND: ttsBackend,
     GEMINI_MODEL: geminiModel,
+    TTS_VOICE: ttsVoice,
     APPEARANCE_MODE: appearanceMode
   });
   Pebble.openURL(clay.generateUrl());
@@ -436,7 +507,9 @@ Pebble.addEventListener('webviewclosed', function(e) {
   }
   if(settings.TTS_BACKEND){
     var selectedSpeechProvider=settings.TTS_BACKEND.value;
-    ttsBackend=selectedSpeechProvider==='none'?'none':'plugin';
+    cancelCurrentAudio();
+    ttsBackend=['none','plugin','direct'].indexOf(selectedSpeechProvider)>=0?
+      selectedSpeechProvider:'plugin';
     localStorage.setItem('TTS_BACKEND',ttsBackend);
   }
   if (settings.CUSTOM_PERSONA) {
@@ -447,6 +520,17 @@ Pebble.addEventListener('webviewclosed', function(e) {
   if (geminiBackend==='direct' && settings.GEMINI_API_KEY && settings.GEMINI_API_KEY.value !== "") {
     geminiApiKey = settings.GEMINI_API_KEY.value;
     localStorage.setItem("GEMINI_API_KEY", geminiApiKey); 
+  }
+
+  // Reuse original Direct Google TTS credentials on upgrades.
+  // Blank inputs must never overwrite previously stored API keys.
+  if (ttsBackend==='direct' && settings.TTS_API_KEY && settings.TTS_API_KEY.value) {
+    ttsApiKey=String(settings.TTS_API_KEY.value);
+    localStorage.setItem('TTS_API_KEY',ttsApiKey);
+  }
+  if (ttsBackend==='direct' && settings.TTS_VOICE) {
+    ttsVoice=normalizeTtsVoice(settings.TTS_VOICE.value||ttsVoice);
+    localStorage.setItem('TTS_VOICE',ttsVoice);
   }
 
   if (geminiBackend==='direct' && settings.GEMINI_MODEL) {
@@ -555,7 +639,8 @@ Pebble.addEventListener('ready', function() {
 
 Pebble.addEventListener('appmessage', function(e) {
   var dict = e.payload || {};
-  if(universalTts.handleMessage(dict))return;
+  if((activeSpeechBackend==='direct'?legacyGoogleTts:universalTts).handleMessage &&
+      (activeSpeechBackend==='direct'?legacyGoogleTts:universalTts).handleMessage(dict))return;
   if (dict.COMMAND === 'WATCH_STATUS') {
     hasSpeaker = Number(dict.SPEAKER_CAPABLE) === 1;
     console.log('Watch reported speaker=',hasSpeaker,'volume=',dict.VOLUME,'TTS provider=',ttsBackend);
@@ -676,10 +761,17 @@ function fetchGeminiResponse(prompt, skipAudio) {
       var textPayload = {COMMAND:cmd,TEXT:displayText};
       function startAnswer() {
         if (generation !== requestGeneration || skipAudio) return;
-        console.log('Universal TTS speak request for displayed reply');
-        universalTts.speak(displayText).catch(function(error){
+        var engine=ttsBackend==='direct'?legacyGoogleTts:universalTts;
+        if(ttsBackend==='direct'&&!ttsApiKey) {
+          console.log('Direct Google TTS selected without a saved key; open WISP settings.');
+          Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
+          return;
+        }
+        activeSpeechBackend=ttsBackend;
+        console.log('Speech request for displayed response via',activeSpeechBackend);
+        engine.speak(displayText).catch(function(error){
           if(generation !== requestGeneration)return;
-          console.log('Universal TTS start failed:',String(error&&error.message||error));
+          console.log('Speech start failed:',String(error&&error.message||error));
           Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
         });
       }
@@ -707,5 +799,7 @@ function fetchGeminiResponse(prompt, skipAudio) {
 // =========================================================================
 function cancelCurrentAudio(){
   requestGeneration++;
-  universalTts.stop();
+  if(activeSpeechBackend==='direct')legacyGoogleTts.stop();
+  else if(activeSpeechBackend==='plugin')universalTts.stop();
+  activeSpeechBackend=null;
 }
