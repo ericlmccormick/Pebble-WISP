@@ -345,7 +345,7 @@ bool universal_tts_is_playing(void){return s_speaker_open||s_buffer_count||s_pcm
 static bool parse_transport_tag(DictionaryIterator *iter,
                                 uint32_t *token,uint32_t *sequence) {
   Tuple *t=dict_find(iter,MESSAGE_KEY_TEXT);
-  if(!t || t->type!=TUPLE_CSTRING || !t->value)return false;
+  if(!t || t->type!=TUPLE_CSTRING)return false;
   unsigned long id=0,seq=0;
   if(sscanf(t->value->cstring,"%lu:%lu",&id,&seq)!=2 || !id)return false;
   *token=(uint32_t)id;
@@ -372,7 +372,7 @@ bool universal_tts_handle_message(DictionaryIterator *iter){
     stop_audio();clear_stats();s_ignore_audio=false;
     s_transport_token=0;s_expected_sequence=0;
     Tuple *tag=dict_find(iter,MESSAGE_KEY_TEXT);
-    if(tag&&tag->type==TUPLE_CSTRING&&tag->value){
+    if(tag&&tag->type==TUPLE_CSTRING){
       unsigned long token=0;
       if(sscanf(tag->value->cstring,"%lu",&token)==1)
         s_transport_token=(uint32_t)token;
@@ -381,7 +381,7 @@ bool universal_tts_handle_message(DictionaryIterator *iter){
   }
   if(!strcmp(c,"AUDIO_STOP")){
     Tuple *tag=dict_find(iter,MESSAGE_KEY_TEXT);
-    if(tag&&tag->type==TUPLE_CSTRING&&tag->value&&s_transport_token){
+    if(tag&&tag->type==TUPLE_CSTRING&&s_transport_token){
       unsigned long token=0;
       if(sscanf(tag->value->cstring,"%lu",&token)==1&&
          (uint32_t)token!=s_transport_token)return true;
@@ -410,7 +410,7 @@ bool universal_tts_handle_message(DictionaryIterator *iter){
   }
   if(is_chunk){
     Tuple *payload=dict_find(iter,MESSAGE_KEY_CHUNK);
-    if(!payload||!payload->value||!payload->length){
+    if(!payload||!payload->length){
       if(ack_mode)send_transport_reply("AUDIO_WAIT",token,sequence);
       return true;
     }
