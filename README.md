@@ -1,48 +1,33 @@
 # WISP — Wrist Intelligence & Speech Portal
 
-**WISP** is a voice-driven AI assistant for Pebble watches. Dictate a question, view the response, and hear it on a speaker-capable Pebble via **Universal TTS** or the preserved **Direct Google Cloud TTS (legacy)** option.
+WISP is a Pebble voice-assistant app that supports installed AI conversation agents, direct Gemini API (legacy), Universal TTS plugin speech, and direct Google Cloud TTS (legacy). It runs on Pebble Time 2 and other supported microphone-equipped Pebble platforms; spoken playback requires a speaker-capable watch.
 
-This repository is the canonical home for WISP, imported from the verified WISP 2.1.6 branch of [Pebble_Gemini](https://github.com/ericlmccormick/Pebble_Gemini). It retains the same watchapp UUID `426c68c7-bdd7-445a-860a-ea587a188993` for in-place upgrades.
+## Audio recovery: 2.2.4
+
+The original 2.1.6 watch-tested audio stack was restored from [Pebble_Gemini feature/gemini-plugin-integration](https://github.com/ericlmccormick/Pebble_Gemini/tree/feature/gemini-plugin-integration) at commit `24b1d522f355a9e9104fe6fd3e1cb6452235be96`. WISP 2.2.0–2.2.3 had replaced its audio transport with a different SDK; those releases produced repeated on-device audio cutoffs after 2–3 seconds. Rather than continue modifying that replacement, 2.2.4 restores the proven implementation unchanged in the important audio paths.
+
+The restored code has:
+- Watch-origin `AUDIO_ACK` / `AUDIO_WAIT` with `STREAM_ID`, `SEQ` and `BUFFER_FREE` instead of trusting the phone Bluetooth send callback.
+- Adaptive sentence prebuffering and backpressure; short PCM frames and continuous speaker power between sentences.
+- The original IMA-ADPCM encoder and watch decoder, with retry and stream-end handling.
+- The original Google Cloud TTS direct option and plugin session adapter, both feeding the same watch playback route.
+- Displayed-text-to-speech parity, including assistant responses categorized as delivery receipts.
+
+**What is retained from WISP:** the existing WISP watchapp UUID `426c68c7-bdd7-445a-860a-ea587a188993`, WISP display name and icons, agent icons, settings page, volume, fonts, automatic appearance, and installed-agent selection.
 
 ## Plugins
 
-- [AI Conversation](https://github.com/ericlmccormick/Pebble-AI-Conversation) or another installed compatible `send_to_agent` plugin supplies the response. Configure the provider/model and authorization in that plugin.
-- [Universal TTS](https://github.com/ericlmccormick/Pebble-Universal-TTS) supplies optional spoken output. Configure any supported speech provider, key, and voice **in Universal TTS**, not in WISP.
+- [AI Conversation](https://github.com/ericlmccormick/Pebble-AI-Conversation): select an installed agent and configure its model/credentials in the plugin. The legacy direct Gemini API option remains.
+- [Universal TTS](https://github.com/ericlmccormick/Pebble-Universal-TTS): choose the plugin speech backend. The plugin UUID `2c5edc42-b096-4f76-b284-1f27907e6502` is preserved from Google Cloud TTS, and its `tts_prepare`, `tts_chunk`, `tts_release` actions still work with WISP's original audio adapter. Settings for Universal TTS provider, voice and credentials live in the plugin.
+- **Direct Google Cloud TTS (legacy):** WISP retains this choice and its locally stored `TTS_API_KEY` and `TTS_VOICE` for existing users.
+- **Text only:** no audio requested.
 
-WISP now uses Universal TTS v1.2 SDK `universal_tts.speak(displayText)` on the phone and `universal_tts_handle_message()` on the watch. The SDK handles 500-character segmentation, provider selection, WAV verification, IMA ADPCM encoding, Bluetooth transfer, playback and cancellation. **Every non-error text response displayed to the watch is eligible for speech**, including responses categorized as delivery receipts. Diagnostic errors remain text-only. WISP supports silent/text-only mode, the prior direct Gemini *conversation* option, **and** the original Direct Google Cloud TTS option for existing users. The Google API key and voice remain saved in WISP when using legacy direct speech, while the Universal TTS provider and voice are configured in its separate plugin.
+New installs use the plugin speech option by default. Existing `TTS_BACKEND` settings and legacy direct credentials are preserved. Upgrades should be installed over the existing app, not via uninstall/reinstall. If version 2.2.0 previously erased a local Google TTS key, it may have to be reentered.
 
-Pebble Time 2 and Pebble 2 Duo support speech; watch models without a speaker receive text only. Universal TTS is optional for users choosing Direct Google Cloud TTS or text-only responses; the AI conversation plugin can still return text without either TTS service.
+## Build and verification
 
-## Build and release
+GitHub Actions runs the restored 2.1.6 protocol, plugin streaming and UI regression tests and compiles basalt, chalk, diorite, flint, emery and gabbro. After a successful build, a direct-install `WISP_preview.pbw` is published on the [preview branch](https://github.com/ericlmccormick/Pebble-WISP/tree/builds/previews). Successful compilation does not itself prove real-device playback; confirm with a long spoken answer before publishing to the Pebble store.
 
-GitHub Actions builds basalt, chalk, diorite, flint, emery and gabbro, validates icon assets, and runs JavaScript tests. Successful `main` pushes publish a direct-install `WISP_preview.pbw` in [builds/previews](https://github.com/ericlmccormick/Pebble-WISP/tree/builds/previews).
+## Support
 
-The original WISP 2.1.6 Bluetooth audio behavior remains available as a historical reference in the earlier repository. WISP 2.2.3 uses the shared Universal TTS audio transport for both Universal TTS and legacy Direct Google TTS. Device testing is required before public store release.
-
-## Store listing
-
-**Name:** WISP — Wrist Intelligence & Speech Portal
-
-**Description:** Talk to your Pebble and get answers from your preferred AI conversation agent. WISP displays answers and, on speaker-capable watches, speaks the displayed response through the separate Universal TTS plugin. Choose your preferred AI provider in its plugin settings, and select Universal TTS or retain your existing Direct Google TTS setup. Includes adjustable volume, font size, day/night/automatic appearance and configurable response style.
-
-Support development: https://ko-fi.com/ericmccormick
-
-## SDK attribution
-
-The vendored `src/pkjs/universal_tts.js`, `src/c/universal_tts.c` and `src/c/universal_tts.h` are copied from the Universal TTS 1.2 SDK, distributed under the MIT license (see `src/c/UNIVERSAL_TTS_LICENSE.txt`). The plugin and WISP are maintained separately.
-
-## Upgrade compatibility
-
-WISP 2.2.3 preserves the original watchapp UUID, the Direct Gemini API selection, the original Direct Google Cloud TTS option, saved `TTS_BACKEND=direct`, `TTS_API_KEY`, `TTS_VOICE`, and explicit text-only settings. Existing direct users need not install Universal TTS to retain Google voice playback. The direct adapter uses the legacy Google API request and streams audio through the same common native TTS receiver as the plugin. Fresh installs use Universal TTS by default.
-
-**If WISP 2.2.0 already ran on your device:** that build removed `TTS_API_KEY` and `TTS_VOICE` from app local storage and switched direct mode to plugin mode. Deleted credentials cannot reliably be restored; select **Direct Google Cloud TTS (legacy)** in WISP settings and re-enter your key and voice if necessary. WISP 2.2.1 will preserve them thereafter. Do not uninstall/reinstall the app when upgrading, since reinstalling can clear stored settings.
-
-## WISP 2.2.3 audio continuity fix
-
-The watch no longer closes its speaker after 1.5 seconds of silence while a response is still streaming. The shared phone SDK now sends an explicit `AUDIO_STREAM_END` message after the final audio packet; the watch drains and closes normally only then. A 30-second idle watchdog handles disconnected phones and flushes final partial PCM frames. The app reports speaker playback statistics in its phone console for troubleshooting. Both Universal TTS and Direct Google Cloud TTS use this same upgraded transport. Device testing is still required before a public release.
-
-## WISP 2.2.3 watch-level audio delivery reliability
-
-The previous automatic 1.5-second speaker shutdown was not the whole problem: WISP 2.2.2 still used a phone-side estimate of the watch's playback buffer and advanced after the *phone* accepted a Bluetooth packet. WISP 2.2.3 restores per-packet acknowledgement from the **watch**, using the `AUDIO_ACK` / `AUDIO_WAIT` commands and an ordered token/sequence in the already-required `TEXT` AppMessage key. Every audio packet is retransmitted on a lost acknowledgment without playing a duplicate. The receiver rejects stale-session packets and applies real ring-buffer backpressure. The previous explicit `AUDIO_STREAM_END` and inactivity watchdog remain.
-
-The SDK now logs exact bytes acknowledged by the watch and reports packets, waits and duplicate counts in the phone console. A 10-second synthetic speech stream (40,000 bytes ADPCM) is tested end-to-end, including a simulated full buffer, lost ACK and BLE failure. Upgrade both matching C and JS SDK files in any dependent app; the **Universal TTS plugin itself** does not change its TTS provider API. Legacy direct Google TTS and existing user settings are preserved.
+Development support: https://ko-fi.com/ericmccormick
