@@ -1,64 +1,77 @@
 #!/usr/bin/env python3
-"""Generate WISP app icons from its approved 144x144 flat-color source.
-No gradients or tiny text. Pebble color palette: black, white and #00AAFF.
-For monochrome displays, the blue accents become white.
+"""Build WISP assets from the user-approved transparent 144/80/25 px PNGs.
+
+The committed files in branding/WISP_icon_*.png are the source of truth.
+Do not draw or regenerate the artwork from the obsolete WISP_source_144.png.
+The 25px icon is copied byte-for-byte to the Pebble launcher menu resource.
 """
 from pathlib import Path
-import sys
+from shutil import copyfile
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "branding" / "WISP_source_144.png"
-RESOURCES = ROOT / "resources" / "images"
 BRANDING = ROOT / "branding"
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
-BLUE = (0, 170, 255)
-PALETTE = (BLACK, WHITE, BLUE)
+RESOURCES = ROOT / "resources" / "images"
+BLACK, WHITE = (0, 0, 0), (255, 255, 255)
+PEBBLE_LEVELS = (0, 85, 170, 255)
 
 
-def quantize(source, size):
-    source = source.resize((size, size), Image.Resampling.LANCZOS).convert("RGB")
-    values = []
-    for r, g, b in source.getdata():
-        index = min(range(3), key=lambda i:
-            (r - PALETTE[i][0]) ** 2 +
-            (g - PALETTE[i][1]) ** 2 +
-            (b - PALETTE[i][2]) ** 2)
-        values.append(index)
-    return values
+def display_mono(image):
+    """Preserve the black signal bars and the white/blue speech silhouette."""
+    rgba = image.convert("RGBA")
+    out = Image.new("RGBA", rgba.size)
+    pixels = []
+    for r, g, b, a in rgba.getdata():
+        # Transparent pixels must never become a colored rectangular backdrop.
+        if a < 128:
+            pixels.append((0, 0, 0, 0))
+        elif max(r, g, b) < 105:
+            pixels.append((0, 0, 0, 255))
+        else:
+            pixels.append((255, 255, 255, 255))
+    out.putdata(pixels)
+    return out
 
 
-def save_rgb(indices, size, filename):
-    image = Image.new("RGB", (size, size))
-    image.putdata([PALETTE[i] for i in indices])
-    image.save(filename, optimize=True)
-
-
-def save_mono(indices, size, filename):
-    image = Image.new("1", (size, size))
-    image.putdata([0 if i == 0 else 255 for i in indices])
-    image.save(filename, optimize=True)
+def pebble_64(image):
+    """Convert the tiny in-app logo to Pebble's 2 bits/channel color palette."""
+    rgba = image.convert("RGBA")
+    pixels = []
+    for r, g, b, a in rgba.getdata():
+        rr, gg, bb = (PEBBLE_LEVELS[min(3, (v + 42) // 85)] for v in (r, g, b))
+        aa = PEBBLE_LEVELS[min(3, (a + 42) // 85)]
+        pixels.append((rr, gg, bb, aa))
+    out = Image.new("RGBA", rgba.size)
+    out.putdata(pixels)
+    return out
 
 
 def main():
-    image = Image.open(SOURCE).convert("RGB")
-    assert image.size == (144, 144), image.size
     RESOURCES.mkdir(parents=True, exist_ok=True)
-    BRANDING.mkdir(parents=True, exist_ok=True)
-    for n in (144, 80, 48):
-        labels = quantize(image, n)
-        out = BRANDING if n != 48 else RESOURCES
-        save_rgb(labels, n, out / f"WISP_color_{n}.png")
-        save_mono(labels, n, out / f"WISP_mono_{n}.png")
+    for size in (144, 80, 25):
+        input_path = BRANDING / f"WISP_icon_{size}.png"
+        with Image.open(input_path) as im:
+            im.verify()
+        with Image.open(input_path) as im:
+            assert im.size == (size, size), (input_path, im.size)
+            assert im.convert("RGBA").getpixel((0, 0))[3] == 0, input_path
 
-    # 25px high-contrast white glyph with transparent black background,
-    # suitable for monochrome Pebble launcher menus.
-    labels = quantize(image, 25)
-    menu = Image.new("RGBA", (25, 25))
-    menu.putdata([(255, 255, 255, 0 if idx == 0 else 255) for idx in labels])
-    menu.save(RESOURCES / "WISP_menu_25.png", optimize=True)
-    print("Created WISP 144/80/48 color and monochrome logos plus 25px menu icon")
+    # Store artwork: use the exact supplied PNG pixel data without changing
+    # colors or stretching the smaller supplied version from the larger one.
+    for size in (144, 80):
+        with Image.open(BRANDING / f"WISP_icon_{size}.png") as im:
+            image = im.convert("RGBA")
+        copyfile(BRANDING / f"WISP_icon_{size}.png", BRANDING / f"WISP_color_{size}.png")
+        display_mono(image).save(BRANDING / f"WISP_mono_{size}.png", optimize=True)
+
+    with Image.open(BRANDING / "WISP_icon_144.png") as im:
+        reduced = im.convert("RGBA").resize((48, 48), Image.Resampling.LANCZOS)
+    pebble_64(reduced).save(RESOURCES / "WISP_color_48.png", optimize=True)
+    display_mono(reduced).save(RESOURCES / "WISP_mono_48.png", optimize=True)
+
+    # Crucial: the launcher must use the user's EXACT 25px gray/black artwork.
+    copyfile(BRANDING / "WISP_icon_25.png", RESOURCES / "WISP_menu_25.png")
+    print("WISP supplied icons: original 144/80 preserved; native 25px menu; 48px watch logos")
 
 
 if __name__ == "__main__":
