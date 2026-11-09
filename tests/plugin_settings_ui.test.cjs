@@ -117,4 +117,34 @@ assert.equal(manifest.pebble.displayName,'WISP');
 assert.equal(manifest.pebble.uuid,'426c68c7-bdd7-445a-860a-ea587a188993');
 assert.match(fs.readFileSync(path.join(root,'src/c/main.c'),'utf8'),/text_layer_set_text\(s_title_layer,s_agent_title\)/);
 assert.match(app,/Wrist Intelligence & Speech Portal/);
+// Same watchapp UUID upgrades legacy Direct Gemini + Direct Google users.
+// Do not require Pebble.invokeAction at initialization on an older phone app.
+const legacyStorage={
+  GEMINI_BACKEND:'direct',GEMINI_API_KEY:'saved-legacy-gemini',
+  TTS_BACKEND:'direct',TTS_API_KEY:'saved-legacy-google',
+  TTS_VOICE:'en-US-Neural2-F'
+};
+const legacyPebble={
+  getActiveWatchInfo:()=>({platform:'emery'}),
+  addEventListener:()=>{},
+  sendAppMessage:(msg,ok)=>{if(ok)ok();},
+  openURL:()=>{}
+};
+const legacyCtx={
+  Pebble:legacyPebble,
+  localStorage:{
+    getItem:k=>Object.hasOwn(legacyStorage,k)?legacyStorage[k]:null,
+    setItem:(k,v)=>{legacyStorage[k]=String(v);},
+    removeItem:k=>{delete legacyStorage[k];}
+  },
+  require:name=>name==='./google_tts_stream'?{
+    create:()=>{throw Error('Plugin TTS must not initialize on old phone');}
+  }:name==='./agent_plugins'?require('../src/pkjs/agent_plugins'):Clay,
+  console,Date,Math,JSON,Promise,atob:()=>'',setTimeout,clearTimeout
+};
+vm.runInNewContext(app,legacyCtx);
+assert.equal(legacyCtx.geminiBackend,'direct');
+assert.equal(legacyCtx.ttsBackend,'direct');
+assert.equal(legacyStorage.TTS_API_KEY,'saved-legacy-google');
+assert.equal(legacyStorage.TTS_VOICE,'en-US-Neural2-F');
 console.log('PASS: WISP branding, preserved identity, isolated Clay settings and plugin permissions');
