@@ -246,7 +246,8 @@ var legacyGoogleTts=GoogleTtsLegacy.create({
     console.log('Direct Google TTS failed:',String(error&&error.message||error));
     Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
   },
-  onComplete:function(){console.log('Direct Google TTS transfer complete');}
+  onComplete:function(){console.log('Direct Google TTS transfer complete');},
+  onStats:function(stats){console.log('WISP legacy speaker playback stats',JSON.stringify(stats));}
 });
 // Direct Gemini + Direct Google users do not need a phone with plugin support.
 // Initialize the real Universal TTS client only when invokeAction is available.
@@ -258,7 +259,8 @@ var universalTts=typeof Pebble.invokeAction==='function'?UniversalTts.create({
     console.log('Universal TTS failed:',String(error&&error.message||error));
     Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
   },
-  onComplete:function(){console.log('Universal TTS transfer complete');}
+  onComplete:function(){console.log('Universal TTS transfer complete');},
+  onStats:function(stats){console.log('WISP Universal speaker playback stats',JSON.stringify(stats));}
 }):{
   speak:function(){return Promise.reject(Error('Update Pebble phone app to use Universal TTS'));},
   stop:function(){},
