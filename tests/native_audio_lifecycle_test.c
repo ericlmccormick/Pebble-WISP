@@ -53,28 +53,41 @@ void speaker_stream_close(void){
   assert(speaker_open);speaker_open=false;speaker_closes++;
 }
 static DictionaryIterator outbox;
-int app_message_outbox_begin(DictionaryIterator **iter){*iter=&outbox;return APP_MSG_OK;}
+static char last_reply_command[48],last_reply_tag[48];
+int app_message_outbox_begin(DictionaryIterator **iter){
+  last_reply_command[0]=last_reply_tag[0]=0;
+  *iter=&outbox;return APP_MSG_OK;
+}
 int app_message_outbox_send(void){return APP_MSG_OK;}
 int dict_write_cstring(DictionaryIterator *iter,int key,const char *value){
-  (void)iter;(void)key;(void)value;return 0;
+  (void)iter;
+  if(key==MESSAGE_KEY_COMMAND)snprintf(last_reply_command,sizeof(last_reply_command),"%s",value);
+  if(key==MESSAGE_KEY_TEXT)snprintf(last_reply_tag,sizeof(last_reply_tag),"%s",value);
+  return 0;
 }
 Tuple *dict_find(DictionaryIterator *iter,int key){
   if(key==MESSAGE_KEY_COMMAND)return iter->command;
   if(key==MESSAGE_KEY_CHUNK)return iter->chunk;
+  if(key==MESSAGE_KEY_TEXT)return iter->text;
   return NULL;
 }
 // Include the production C file in this translation unit so static timers
 // and state go through exactly the same callbacks as the watch SDK build.
 #include "../src/c/universal_tts.c"
-static void deliver(const char *name,size_t n){
+static void deliverTagged(const char *name,size_t n,const char *tag){
   TupleValue commandValue={0},chunkValue={0};
   Tuple command={.type=TUPLE_CSTRING,.length=1,.value=&commandValue};
   Tuple chunk={.type=1,.length=(uint16_t)n,.value=&chunkValue};
-  DictionaryIterator message={.command=&command,.chunk=n?&chunk:NULL};
+  TupleValue tagValue={0};
+  Tuple text={.type=TUPLE_CSTRING,.length=tag?(uint16_t)strlen(tag)+1:0,.value=&tagValue};
+  if(tag)snprintf(tagValue.cstring,sizeof(tagValue.cstring),"%s",tag);
+  DictionaryIterator message={.command=&command,.chunk=n?&chunk:NULL,
+    .text=tag?&text:NULL};
   strcpy(commandValue.cstring,name);
   for(size_t i=0;i<n;i++)chunkValue.data[i]=(uint8_t)(i&255);
   assert(universal_tts_handle_message(&message));
 }
+static void deliver(const char *name,size_t n){deliverTagged(name,n,NULL);}
 int main(void){
   universal_tts_init();
   deliver("AUDIO_RESET",0);
@@ -107,7 +120,31 @@ int main(void){
   assert(speaker_closes==1 && speaker_open);
   advance_ms(3000);
   assert(speaker_closes==2 && !speaker_open);
+  // Watch-origin ACK is mandatory for tagged packets, and retried packets
+  // must never enter the audio buffer twice.
+  deliverTagged("AUDIO_RESET",0,"29108");
+  deliverTagged("AUDIO_CHUNK",360,"29108:0");
+  assert(strcmp(last_reply_command,"AUDIO_ACK")==0);
+  assert(strcmp(last_reply_tag,"29108:0")==0);
+  assert(s_expected_sequence==1);
+  uint32_t before_duplicate=s_buffer_count;
+  deliverTagged("AUDIO_CHUNK",360,"29108:0");
+  assert(strcmp(last_reply_command,"AUDIO_ACK")==0);
+  assert(s_buffer_count==before_duplicate && s_transport_duplicates==1);
+  deliverTagged("AUDIO_CHUNK",360,"29108:2");
+  assert(strcmp(last_reply_command,"AUDIO_WAIT")==0);
+  assert(s_expected_sequence==1);
+  deliverTagged("AUDIO_CHUNK",360,"11111:1");
+  assert(last_reply_command[0]==0 && s_expected_sequence==1);
+  deliverTagged("AUDIO_CHUNK",360,"29108:1");
+  assert(strcmp(last_reply_command,"AUDIO_ACK")==0);
+  assert(s_expected_sequence==2);
+  deliverTagged("AUDIO_SENTENCE_END",0,"29108:2");
+  assert(strcmp(last_reply_command,"AUDIO_ACK")==0 && s_expected_sequence==3);
+  deliverTagged("AUDIO_STREAM_END",0,"29108:3");
+  assert(strcmp(last_reply_command,"AUDIO_ACK")==0 && s_expected_sequence==4);
+  advance_ms(2500);
   universal_tts_deinit();
-  printf("PASS: watch speaker survives 3.5s and 2.7s gaps; closes only after end or 30s fail-safe\n");
+  printf("PASS: native watch speaker stays live across gaps, confirms ordered packet ACKs and drops duplicates\n");
   return 0;
 }
