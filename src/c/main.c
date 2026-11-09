@@ -2,23 +2,13 @@
 // SECTION 1: SYSTEM HEADERS & PREPROCESSOR MACROS
 // =========================================================================
 
-#include <pebble.h> 
+#include <pebble.h>
+#include "universal_tts.h" 
 
 #define MAX_TEXT_LENGTH 2048 
 
 #ifdef PBL_SPEAKER
-  #define RING_BUFFER_SIZE 16384           
-  #define PERSIST_KEY_VOLUME 100           
-  #define PLAYBACK_ADPCM_BYTES 160  // 40 ms per decode block at 8 kHz         
-  #define PLAYBACK_PCM_SAMPLES (PLAYBACK_ADPCM_BYTES * 2) 
-  #define PLAYBACK_INTERVAL_MS 35 // Refill in small PCM blocks, without stacking long audio ahead         
-  #define START_BUFFER_THRESHOLD 2400  // 0.6 seconds of ADPCM at 8 kHz
-  #define MAX_START_BUFFER 12000    // Leave room for incoming packets
-  #define SPEAKER_BYTES_PER_SECOND 4000
-  #define SENTENCE_QUEUE_SIZE 32 // Prebuffer independently for each spoken sentence      
-  #define STREAM_FINISH_DRAIN_MS 700  // Flush last PCM and silent tail before amplifier shutdown
-  #define STREAM_IDLE_FAILSAFE_MS 30000 // Recover if phone disappears between sentences
-  #define SILENCE_PCM_SAMPLES 240     // 30 ms, less than the 35-ms tick to avoid accumulating silent backlog       
+  #define PERSIST_KEY_VOLUME 100
 #endif
 
 // =========================================================================
@@ -101,70 +91,10 @@ static void appearance_tick(struct tm *tick_time, TimeUnits units_changed) {
 }
      
 
-// =========================================================================
-// SECTION 3: SPEAKER INFRASTRUCTURE VARIABLES & TABLES (SPEAKER ONLY)
-// =========================================================================
-
+// Universal TTS owns all audio buffers, streaming, and speaker state.
 #ifdef PBL_SPEAKER
-  // Volume layer declared alongside the appearance controller. 
-  static float s_volume = 1.0f;                 
-  static AppTimer *s_volume_timer = NULL;       
-  static uint8_t s_ring_buffer[RING_BUFFER_SIZE]; 
-  static uint32_t s_head = 0;                   
-  static uint32_t s_tail = 0;                   
-  static uint32_t s_buffer_count = 0;           
-  static AppTimer *s_playback_timer = NULL;
-  static AppTimer *s_start_retry_timer = NULL;     
-  static AppTimer *s_stream_close_timer = NULL; 
-  static bool s_speaker_open = false;           
-  static bool s_ignore_audio = false;
-  static bool s_sentence_ended = false;
-  static bool s_stream_finished = false;
-  static int16_t s_silence_pcm[SILENCE_PCM_SAMPLES]; // Static zero-initialized
-  static uint32_t s_stream_id = 0;
-  static int32_t s_expected_seq = 0;
-  static uint32_t s_sentence_total = 0;
-  static uint32_t s_sentence_received = 0;
-  static uint32_t s_start_threshold = START_BUFFER_THRESHOLD;
-  static bool s_rebuffering = false;
-  // Sentence boundaries are offsets in the continuous ADPCM byte stream.
-  // The ring may contain future sentences; they must not play until their
-  // own startup reserve is available, even while the amplifier stays on.
-  typedef struct {
-    uint32_t start;
-    uint32_t end;
-    uint32_t start_threshold;
-    bool started;
-  } AudioSentence;
-  static AudioSentence s_sentences[SENTENCE_QUEUE_SIZE];
-  static uint8_t s_sentence_head = 0;
-  static uint8_t s_sentence_tail = 0;
-  static uint8_t s_sentence_count = 0;
-  static uint32_t s_received_audio_bytes = 0;
-  static uint32_t s_consumed_audio_bytes = 0;
-  static int16_t s_pending_pcm[PLAYBACK_PCM_SAMPLES];
-  static uint32_t s_pending_pcm_bytes = 0;
-  static uint32_t s_pending_pcm_offset = 0;           
-
-  static const int16_t stepTable[89] = {
-    7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,
-    34,37,41,45,50,55,60,66,73,80,88,97,107,118,
-    130,143,157,173,190,209,230,253,279,307,337,
-    371,408,449,494,544,598,658,724,796,876,963,
-    1060,1166,1282,1411,1552,1707,1878,2066,2272,
-    2499,2749,3024,3327,3660,4026,4428,4871,5358,
-    5894,6484,7132,7845,8630,9493,10442,11487,
-    12635,13899,15289,16818,18500,20350,22385,
-    24623,27086,29794,32767
-  };
-
-  static const int8_t indexTable[16] = {
-    -1,-1,-1,-1,2,4,6,8,
-    -1,-1,-1,-1,2,4,6,8
-  };
-
-  static int32_t s_adpcm_valpred = 0;           
-  static int32_t s_adpcm_index = 0;             
+static float s_volume=1.0f;
+static AppTimer *s_volume_timer=NULL;
 #endif
 
 // =========================================================================
@@ -241,36 +171,9 @@ static void update_text_layout() {
 }
 
 // =========================================================================
-// SECTION 6: IMA-ADPCM DECODER & HARDWARE SPEAKER MANAGEMENT (SPEAKER ONLY)
+// SECTION 6: UNIVERSAL TTS VOLUME & WATCH CAPABILITY STATUS
 // =========================================================================
-
 #ifdef PBL_SPEAKER
-  static void reset_adpcm_state() {
-    s_adpcm_valpred = 0;                        
-    s_adpcm_index = 0;                          
-  }
-
-  static int16_t decode_adpcm_to_16bit(uint8_t delta) {
-    int32_t step = stepTable[s_adpcm_index];     
-    int32_t vpdiff = step >> 3;                 
-
-    if (delta & 4) vpdiff += step;
-    if (delta & 2) vpdiff += (step >> 1);
-    if (delta & 1) vpdiff += (step >> 2);
-
-    if (delta & 8) s_adpcm_valpred -= vpdiff;
-    else s_adpcm_valpred += vpdiff;
-
-    if (s_adpcm_valpred > 32767) s_adpcm_valpred = 32767;
-    if (s_adpcm_valpred < -32768) s_adpcm_valpred = -32768;
-
-    s_adpcm_index += indexTable[delta];
-    if (s_adpcm_index < 0) s_adpcm_index = 0;     
-    if (s_adpcm_index > 88) s_adpcm_index = 88;   
-
-    return (int16_t)(s_adpcm_valpred * s_volume);
-  }
-
   static void hide_volume_layer_callback(void *data) {
     s_volume_timer = NULL;                      
     layer_set_hidden(text_layer_get_layer(s_volume_text_layer), true); 
@@ -293,239 +196,19 @@ static void update_text_layout() {
     s_volume_timer = app_timer_register(2000, hide_volume_layer_callback, NULL); 
   }
 
-  static void playback_timer_callback(void *data);
-  static void start_playback(void);
-  static void maybe_start_playback(void);
-  static void start_retry_callback(void *data) {
-    s_start_retry_timer = NULL;
-    maybe_start_playback();
-  }
 
-
-  // Stop-and-wait protocol: ACK only after data has entered the ring.
-  // A retry with an old sequence gets the same ACK but is never enqueued twice.
-  static void send_audio_reply(const char *command, int32_t sequence) {
-    DictionaryIterator *out = NULL;
-    if (app_message_outbox_begin(&out) != APP_MSG_OK || !out) return;
-    dict_write_cstring(out, MESSAGE_KEY_COMMAND, command);
-    dict_write_int32(out, MESSAGE_KEY_STREAM_ID, (int32_t)s_stream_id);
-    dict_write_int32(out, MESSAGE_KEY_SEQ, sequence);
-    dict_write_int32(out, MESSAGE_KEY_BUFFER_FREE, (int32_t)(RING_BUFFER_SIZE - s_buffer_count));
-    app_message_outbox_send();
-  }
-
-  static uint32_t choose_start_threshold(uint32_t total, uint32_t link_rate) {
-    if (total > 0 && total <= 4800) return total; // Entire short sentence first.
-    // Adaptive estimate: audio drains at 4 KB/s. A slower link requires
-    // a larger safety reservoir to finish longer sentences.
-    uint32_t target = START_BUFFER_THRESHOLD;
-    if (link_rate < 4800) {
-      uint32_t shortfall = link_rate >= SPEAKER_BYTES_PER_SECOND ? 0 :
-        (uint32_t)(((uint64_t)total * (SPEAKER_BYTES_PER_SECOND - link_rate)) / SPEAKER_BYTES_PER_SECOND);
-      target = 4000 + shortfall;
-    } else if (link_rate < 6000) {
-      target = 3600;
-    }
-    if (target > MAX_START_BUFFER) target = MAX_START_BUFFER;
-    if (total > 0 && target > total) target = total;
-    return target;
-  }
-
-  static AudioSentence *active_sentence(void) {
-    while (s_sentence_count > 0) {
-      AudioSentence *sentence = &s_sentences[s_sentence_head];
-      if (s_consumed_audio_bytes < sentence->end) return sentence;
-      s_sentence_head = (s_sentence_head + 1) % SENTENCE_QUEUE_SIZE;
-      s_sentence_count--;
-    }
-    return NULL;
-  }
-
-  static bool sentence_ready(AudioSentence *sentence) {
-    if (!sentence) return false;
-    if (sentence->started) return true;
-    // This excludes prefetched bytes belonging to later sentences.
-    uint32_t stored = s_received_audio_bytes > sentence->start ?
-                      s_received_audio_bytes - sentence->start : 0;
-    uint32_t total = sentence->end - sentence->start;
-    if (stored > total) stored = total;
-    uint32_t consumed = s_consumed_audio_bytes > sentence->start ?
-                        s_consumed_audio_bytes - sentence->start : 0;
-    uint32_t unplayed = stored > consumed ? stored - consumed : 0;
-    if (unplayed >= sentence->start_threshold || stored == total) {
-      sentence->started = true;
-      s_rebuffering = false;
-      return true;
-    }
-    return false;
-  }
-
-  static void maybe_start_playback() {
-    if (s_ignore_audio || s_speaker_open) return;
-    if (sentence_ready(active_sentence())) start_playback();
-  }
-
-  static void delayed_close_callback(void *data);  
-
-  static void cancel_close_timer() {
-    if (s_stream_close_timer) {
-      app_timer_cancel(s_stream_close_timer);   
-      s_stream_close_timer = NULL;              
-    }
-  }
-
-  static void delayed_close_callback(void *data) {
-    s_stream_close_timer = NULL;
-    // The amplifier is held on for every gap within the response. Only
-    // shut down after the phone's final marker and the last PCM samples,
-    // or after a long connection-loss failsafe.
-    if (s_buffer_count == 0 && s_pending_pcm_offset == s_pending_pcm_bytes &&
-        s_speaker_open) {
-      if (s_playback_timer) {
-        app_timer_cancel(s_playback_timer);
-        s_playback_timer = NULL;
-      }
-      speaker_stream_close();
-      s_speaker_open = false;
-      set_status(NULL);
-    }
-  }
-
-  static void schedule_close_timer() {
-    if (!s_stream_close_timer) {
-      s_stream_close_timer = app_timer_register(
-        s_stream_finished ? STREAM_FINISH_DRAIN_MS : STREAM_IDLE_FAILSAFE_MS,
-        delayed_close_callback, NULL);
-    }
-  }
-
-  static void push_to_ring_buffer(uint8_t *data, uint16_t length) {
-    for (uint16_t i = 0; i < length; i++) {     
-      if (s_buffer_count < RING_BUFFER_SIZE) {  
-        s_ring_buffer[s_tail] = data[i];        
-        s_tail = (s_tail + 1) % RING_BUFFER_SIZE; 
-        s_buffer_count++;                       
-      }
-    }
-    cancel_close_timer();                       
-  }
-
-  static void start_playback() {
-    cancel_close_timer();                       
-    set_status(NULL);                           
-
-    if (!s_speaker_open) {                      
-      bool success = speaker_stream_open(SpeakerPcmFormat_8kHz_16bit, 100);
-      if (!success) {
-        // Speaker may still be draining the previous sentence.
-        if (!s_start_retry_timer) s_start_retry_timer = app_timer_register(120, start_retry_callback, NULL);
-        return;
-      }
-      s_speaker_open = true;
-      s_rebuffering = false;                    
-    }
-
-    if (!s_playback_timer) {                     
-      s_playback_timer = app_timer_register(PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL); 
-    }
-  }
-
-  static void playback_timer_callback(void *data) {
-    s_playback_timer = NULL;
-    if (!s_speaker_open) return;
-
-    // A new sentence must independently satisfy its prebuffer threshold.
-    // Do not let prefetched audio from a later sentence bypass this gate.
-    if (s_pending_pcm_offset == s_pending_pcm_bytes) {
-      s_pending_pcm_offset = 0;
-      s_pending_pcm_bytes = 0;
-      AudioSentence *sentence = active_sentence();
-      if (sentence && sentence_ready(sentence)) {
-        uint32_t remaining_in_sentence = sentence->end - s_consumed_audio_bytes;
-        uint32_t available = s_buffer_count;
-        if (available > remaining_in_sentence) available = remaining_in_sentence;
-        if (available > PLAYBACK_ADPCM_BYTES) available = PLAYBACK_ADPCM_BYTES;
-        if (available > 0) {
-          for (uint32_t i = 0; i < available; i++) {
-            uint8_t encoded = s_ring_buffer[s_head];
-            s_head = (s_head + 1) % RING_BUFFER_SIZE;
-            s_buffer_count--;
-            s_pending_pcm[i * 2] = decode_adpcm_to_16bit((encoded >> 4) & 15);
-            s_pending_pcm[i * 2 + 1] = decode_adpcm_to_16bit(encoded & 15);
-          }
-          s_consumed_audio_bytes += available;
-          s_pending_pcm_bytes = available * 4;
-        } else {
-          // Connection underrun: wait for more than one packet before
-          // resuming this sentence. Keep the amplifier powered meanwhile.
-          sentence->started = false;
-          if (sentence->start_threshold < 4000) sentence->start_threshold = 4000;
-          s_rebuffering = true;
-        }
-      }
-    }
-
-    if (s_pending_pcm_offset < s_pending_pcm_bytes) {
-      uint32_t remaining = s_pending_pcm_bytes - s_pending_pcm_offset;
-      uint32_t written = speaker_stream_write(
-        ((uint8_t*)s_pending_pcm) + s_pending_pcm_offset, remaining);
-      if (written > remaining) written = remaining;
-      s_pending_pcm_offset += written;
-    } else if (s_pending_pcm_offset == s_pending_pcm_bytes) {
-      // Silence on an idle tick preserves amplifier power while the next
-      // sentence fills its own reserve, even if its bytes are already queued.
-      schedule_close_timer();
-      speaker_stream_write((uint8_t*)s_silence_pcm, sizeof(s_silence_pcm));
-    }
-    s_playback_timer = app_timer_register(PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL);
-  }
-
-  static void stop_audio() {
-    if (s_start_retry_timer) {
-      app_timer_cancel(s_start_retry_timer);
-      s_start_retry_timer = NULL;
-    }
-    if (s_speaker_open) {
-      speaker_stream_close();                   
-      s_speaker_open = false;                   
-    }
-    if (s_playback_timer) {
-      app_timer_cancel(s_playback_timer);       
-      s_playback_timer = NULL;                  
-    }
-    cancel_close_timer();                       
-    s_buffer_count = 0;
-    s_pending_pcm_bytes = 0;
-    s_pending_pcm_offset = 0;
-    s_head = 0;                                 
-    s_tail = 0;                                 
-    reset_adpcm_state();
-    s_sentence_ended = false;
-    s_stream_finished = false;
-    s_sentence_total = 0;
-    s_sentence_received = 0;
-    s_start_threshold = START_BUFFER_THRESHOLD;
-    s_rebuffering = false;
-    s_sentence_head = s_sentence_tail = s_sentence_count = 0;
-    s_received_audio_bytes = s_consumed_audio_bytes = 0;
-    set_status(NULL);                           
-  }
-
-  static void up_volume_handler(ClickRecognizerRef recognizer, void *context) {
-    s_volume += 0.1f;                           
-    if (s_volume > 1.0f) s_volume = 1.0f;       
-    persist_write_int(PERSIST_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    vibes_short_pulse();                        
-    show_volume_indicator();                    
-  }
-
-  static void down_volume_handler(ClickRecognizerRef recognizer, void *context) {
-    s_volume -= 0.1f;                           
-    if (s_volume < 0.0f) s_volume = 0.0f;       
-    persist_write_int(PERSIST_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    vibes_short_pulse();                        
-    show_volume_indicator();                    
-  }
+static void up_volume_handler(ClickRecognizerRef recognizer,void *context){
+  s_volume+=0.1f;if(s_volume>1.0f)s_volume=1.0f;
+  universal_tts_set_volume(s_volume);
+  persist_write_int(PERSIST_KEY_VOLUME,(int)(s_volume*100.0f+0.5f));
+  vibes_short_pulse();show_volume_indicator();
+}
+static void down_volume_handler(ClickRecognizerRef recognizer,void *context){
+  s_volume-=0.1f;if(s_volume<0.0f)s_volume=0.0f;
+  universal_tts_set_volume(s_volume);
+  persist_write_int(PERSIST_KEY_VOLUME,(int)(s_volume*100.0f+0.5f));
+  vibes_short_pulse();show_volume_indicator();
+}
 #endif
 
 static void send_watch_status(void) {
@@ -550,30 +233,17 @@ static void watch_status_timer(void *data) {
 // =========================================================================
 
 static void select_short_click_handler(ClickRecognizerRef recognizer, void *context) {
-  #ifdef PBL_SPEAKER
-  if (s_speaker_open || s_buffer_count > 0 || !s_ignore_audio) {
-    s_ignore_audio = true;
-    stop_audio();                               
-  }
-  #endif
+  universal_tts_stop();
+  set_status(NULL);
   send_watch_status();
   dictation_session_start(s_dictation_session); 
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  #ifdef PBL_SPEAKER
-  if (s_speaker_open || s_buffer_count > 0) {
-    s_ignore_audio = true;                      
-    stop_audio();                               
-    vibes_double_pulse();                       
-    set_ui_state(UI_STATE_IDLE);                
-  }
-  #endif
-  
-  #ifndef PBL_SPEAKER
-  vibes_double_pulse();                         
+  universal_tts_stop();
+  set_status(NULL);
+  vibes_double_pulse();
   set_ui_state(UI_STATE_IDLE);
-  #endif
 }
 
 static void window_click_config_provider(void *context) {
@@ -678,7 +348,18 @@ static void update_agent_display(const char *name, int agent) {
 }
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
   Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_COMMAND); 
-  if (!command_tuple) return;                   
+  if (!command_tuple) return;
+  // The shared Universal TTS SDK is the sole receiver for AUDIO_RESET,
+  // AUDIO_CHUNK, AUDIO_SENTENCE_END and AUDIO_STOP.
+  if (universal_tts_handle_message(iterator)) return;
+  if (strcmp(command_tuple->value->cstring,"AUDIO_STATS")==0) {
+    set_status(NULL);
+    return;
+  }
+  if (strcmp(command_tuple->value->cstring,"TTS_FAILURE")==0) {
+    set_status("Speech unavailable");
+    return;
+  }                   
 
   if (strcmp(command_tuple->value->cstring, "UPDATE_APPEARANCE") == 0) {
     Tuple *mode = dict_find(iterator, MESSAGE_KEY_APPEARANCE_MODE);
@@ -704,15 +385,13 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   }
   if (strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) { 
     bool no_audio = false;
-    #ifdef PBL_SPEAKER
-      stop_audio(); // Discard previous answer before accepting a new session.
-    #endif
+    universal_tts_stop(); // New response owns the next speech session.
 
     #ifdef PBL_SPEAKER
       // MULTIPLEXING INTERCEPT: Determine if the phone told us to expect audio chunks
       if (strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
         no_audio = true;
-        s_ignore_audio = true;
+        // Text-only mode is intentionally silent.
       }
     #endif
 
@@ -728,19 +407,6 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         if (no_audio) {
           set_status(NULL);                     // Immediately clear status strip if no audio is expected (text-only mode)
         } else {
-          s_ignore_audio = false;               
-          reset_adpcm_state();
-          s_sentence_ended = false;
-          s_stream_finished = false;
-          s_sentence_received = 0;
-          s_sentence_total = 0;
-          s_expected_seq = 0;
-          s_start_threshold = START_BUFFER_THRESHOLD;
-          s_rebuffering = false;
-          s_sentence_head = s_sentence_tail = s_sentence_count = 0;
-          s_received_audio_bytes = s_consumed_audio_bytes = 0;
-          Tuple *stream_tuple = dict_find(iterator, MESSAGE_KEY_STREAM_ID);
-          if (stream_tuple) s_stream_id = (uint32_t)stream_tuple->value->int32;
           if (s_volume > 0.01f) {
             set_status("Buffering Audio...");   
           } else {
@@ -752,110 +418,6 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       #endif
     }
   } 
-  
-  #ifdef PBL_SPEAKER
-  else if (strcmp(command_tuple->value->cstring, "AUDIO_CHUNK") == 0 ||
-           strcmp(command_tuple->value->cstring, "AUDIO_SENTENCE_END") == 0 ||
-           strcmp(command_tuple->value->cstring, "AUDIO_STREAM_END") == 0) {
-    Tuple *id_tuple = dict_find(iterator, MESSAGE_KEY_STREAM_ID);
-    Tuple *seq_tuple = dict_find(iterator, MESSAGE_KEY_SEQ);
-    if (!id_tuple || !seq_tuple || (uint32_t)id_tuple->value->int32 != s_stream_id || s_ignore_audio) return;
-    int32_t sequence = seq_tuple->value->int32;
-    if (sequence < s_expected_seq) {
-      send_audio_reply("AUDIO_ACK", sequence); // Lost ACK: do not double insert.
-      return;
-    }
-    if (sequence != s_expected_seq) {
-      send_audio_reply("AUDIO_WAIT", sequence);
-      return;
-    }
-
-    if (strcmp(command_tuple->value->cstring, "AUDIO_CHUNK") == 0) {
-      Tuple *chunk_tuple = dict_find(iterator, MESSAGE_KEY_CHUNK);
-      if (!chunk_tuple || !chunk_tuple->length) return;
-      if (chunk_tuple->length > RING_BUFFER_SIZE - s_buffer_count) {
-        send_audio_reply("AUDIO_WAIT", sequence);
-        return;
-      }
-      Tuple *total_tuple = dict_find(iterator, MESSAGE_KEY_SENTENCE_TOTAL);
-      Tuple *hint_tuple = dict_find(iterator, MESSAGE_KEY_BUFFER_HINT);
-      if (s_sentence_received == 0) {
-        if (!total_tuple || total_tuple->value->int32 <= 0 ||
-            (uint32_t)total_tuple->value->int32 < chunk_tuple->length ||
-            s_sentence_count >= SENTENCE_QUEUE_SIZE) {
-          send_audio_reply("AUDIO_WAIT", sequence);
-          return;
-        }
-        uint32_t length = (uint32_t)total_tuple->value->int32;
-        uint32_t rate = hint_tuple ? (uint32_t)hint_tuple->value->int32 : 5200;
-        AudioSentence *sentence = &s_sentences[s_sentence_tail];
-        sentence->start = s_received_audio_bytes;
-        sentence->end = s_received_audio_bytes + length;
-        sentence->start_threshold = choose_start_threshold(length, rate);
-        sentence->started = false;
-        s_sentence_tail = (s_sentence_tail + 1) % SENTENCE_QUEUE_SIZE;
-        s_sentence_count++;
-        s_sentence_total = length;
-      }
-      // Prevent malformed or out-of-order sizes from crossing a sentence
-      // boundary. The sender repeats the same packet after AUDIO_WAIT.
-      if ((uint32_t)chunk_tuple->length > s_sentence_total - s_sentence_received) {
-        APP_LOG(APP_LOG_LEVEL_WARNING, "Audio packet exceeds sentence length");
-        send_audio_reply("AUDIO_WAIT", sequence);
-        return;
-      }
-      // Keep re-evaluating only the sentence that is currently filling;
-      // later packets provide better throughput estimates than the first.
-      if (s_sentence_count && hint_tuple && s_sentence_total) {
-        uint8_t last = (s_sentence_tail + SENTENCE_QUEUE_SIZE - 1) % SENTENCE_QUEUE_SIZE;
-        AudioSentence *sentence = &s_sentences[last];
-        if (!sentence->started) {
-          uint32_t target = choose_start_threshold(s_sentence_total, (uint32_t)hint_tuple->value->int32);
-          if (s_rebuffering && target < 4000) target = 4000;
-          sentence->start_threshold = target;
-        }
-      }
-      s_sentence_ended = false;
-      push_to_ring_buffer(chunk_tuple->value->data, chunk_tuple->length);
-      s_sentence_received += chunk_tuple->length;
-      s_received_audio_bytes += chunk_tuple->length;
-      s_expected_seq++;
-      send_audio_reply("AUDIO_ACK", sequence);
-      maybe_start_playback();
-    } else if (strcmp(command_tuple->value->cstring, "AUDIO_SENTENCE_END") == 0) {
-      s_sentence_ended = true;
-      s_sentence_total = 0;
-      s_sentence_received = 0;
-      s_expected_seq++;
-      send_audio_reply("AUDIO_ACK", sequence);
-      maybe_start_playback();
-    } else { // AUDIO_STREAM_END: every sentence has arrived.
-      s_sentence_ended = true;
-      s_stream_finished = true;
-      s_expected_seq++;
-      send_audio_reply("AUDIO_ACK", sequence);
-      // A previously scheduled idle failsafe is replaced with the shorter
-      // final-drain timer once queued PCM has actually been played.
-      cancel_close_timer();
-      if (!s_speaker_open && s_buffer_count > 0) maybe_start_playback();
-      if (!s_speaker_open && s_buffer_count == 0) set_status(NULL);
-    }
-  } else if (strcmp(command_tuple->value->cstring, "AUDIO_ERROR") == 0) {
-    Tuple *id_tuple = dict_find(iterator, MESSAGE_KEY_STREAM_ID);
-    if (id_tuple && (uint32_t)id_tuple->value->int32 == s_stream_id) {
-      s_ignore_audio = true;
-      stop_audio();
-      Tuple *reason = dict_find(iterator, MESSAGE_KEY_TEXT);
-      if (reason && reason->length > 1) {
-        snprintf(s_gemini_text, sizeof(s_gemini_text), "Speech error: %.90s", reason->value->cstring);
-        APP_LOG(APP_LOG_LEVEL_ERROR, "%s", s_gemini_text);
-        set_status("TTS error (phone log)");
-      } else {
-        set_status("Audio unavailable");
-      }
-    }
-  }
-  #endif
   
   else if (strcmp(command_tuple->value->cstring, "UPDATE_FONT") == 0) { 
     Tuple *font_tuple = dict_find(iterator, MESSAGE_KEY_FONT_SIZE); 
@@ -1004,7 +566,7 @@ static void main_window_unload(Window *window) {
     s_pinwheel_timer = NULL;
   }
   #ifdef PBL_SPEAKER
-    stop_audio();                               
+    universal_tts_stop();
     if (s_volume_timer) app_timer_cancel(s_volume_timer); 
     text_layer_destroy(s_volume_text_layer);    
   #endif
@@ -1047,6 +609,10 @@ static void init() {
     if (s_volume > 1.0f) s_volume = 1.0f; 
   #endif
   
+  universal_tts_init();
+#ifdef PBL_SPEAKER
+  universal_tts_set_volume(s_volume);
+#endif
   app_message_register_inbox_received(inbox_received_callback); 
   app_message_open(12000, 1024);                
   
@@ -1061,6 +627,7 @@ static void init() {
 
 static void deinit() { 
   tick_timer_service_unsubscribe();
+  universal_tts_deinit();
   window_destroy(s_main_window);                
 }
 
