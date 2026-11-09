@@ -1,6 +1,6 @@
 # WISP — Wrist Intelligence & Speech Portal
 
-**WISP** is a voice-driven AI assistant for Pebble watches. Dictate a question, view the response, and hear it on a speaker-capable Pebble via **Universal TTS**.
+**WISP** is a voice-driven AI assistant for Pebble watches. Dictate a question, view the response, and hear it on a speaker-capable Pebble via **Universal TTS** or the preserved **Direct Google Cloud TTS (legacy)** option.
 
 This repository is the canonical home for WISP, imported from the verified WISP 2.1.6 branch of [Pebble_Gemini](https://github.com/ericlmccormick/Pebble_Gemini). It retains the same watchapp UUID `426c68c7-bdd7-445a-860a-ea587a188993` for in-place upgrades.
 
@@ -9,24 +9,30 @@ This repository is the canonical home for WISP, imported from the verified WISP 
 - [AI Conversation](https://github.com/ericlmccormick/Pebble-AI-Conversation) or another installed compatible `send_to_agent` plugin supplies the response. Configure the provider/model and authorization in that plugin.
 - [Universal TTS](https://github.com/ericlmccormick/Pebble-Universal-TTS) supplies optional spoken output. Configure any supported speech provider, key, and voice **in Universal TTS**, not in WISP.
 
-WISP now uses Universal TTS v1.2 SDK `universal_tts.speak(displayText)` on the phone and `universal_tts_handle_message()` on the watch. The SDK handles 500-character segmentation, provider selection, WAV verification, IMA ADPCM encoding, Bluetooth transfer, playback and cancellation. **Every non-error text response displayed to the watch is eligible for speech**, including responses categorized as delivery receipts. Diagnostic errors remain text-only. WISP still supports silent/text-only mode and the previous direct Gemini *conversation* option; direct Google TTS and hardcoded TTS voices have been removed.
+WISP now uses Universal TTS v1.2 SDK `universal_tts.speak(displayText)` on the phone and `universal_tts_handle_message()` on the watch. The SDK handles 500-character segmentation, provider selection, WAV verification, IMA ADPCM encoding, Bluetooth transfer, playback and cancellation. **Every non-error text response displayed to the watch is eligible for speech**, including responses categorized as delivery receipts. Diagnostic errors remain text-only. WISP supports silent/text-only mode, the prior direct Gemini *conversation* option, **and** the original Direct Google Cloud TTS option for existing users. The Google API key and voice remain saved in WISP when using legacy direct speech, while the Universal TTS provider and voice are configured in its separate plugin.
 
-Pebble Time 2 and Pebble 2 Duo support speech; watch models without a speaker receive text only. Universal TTS is optional; the AI conversation plugin can still return text without it.
+Pebble Time 2 and Pebble 2 Duo support speech; watch models without a speaker receive text only. Universal TTS is optional for users choosing Direct Google Cloud TTS or text-only responses; the AI conversation plugin can still return text without either TTS service.
 
 ## Build and release
 
 GitHub Actions builds basalt, chalk, diorite, flint, emery and gabbro, validates icon assets, and runs JavaScript tests. Successful `main` pushes publish a direct-install `WISP_preview.pbw` in [builds/previews](https://github.com/ericlmccormick/Pebble-WISP/tree/builds/previews).
 
-The original WISP 2.1.6 Bluetooth audio behavior remains available as a historical reference in the earlier repository, but WISP 2.2 uses the shared Universal TTS transport. Device testing is required before public store release.
+The original WISP 2.1.6 Bluetooth audio behavior remains available as a historical reference in the earlier repository. WISP 2.2.1 uses the shared Universal TTS audio transport for both Universal TTS and legacy Direct Google TTS. Device testing is required before public store release.
 
 ## Store listing
 
 **Name:** WISP — Wrist Intelligence & Speech Portal
 
-**Description:** Talk to your Pebble and get answers from your preferred AI conversation agent. WISP displays answers and, on speaker-capable watches, speaks the displayed response through the separate Universal TTS plugin. Choose your preferred AI and speech providers in their plugin settings. Includes adjustable volume, font size, day/night/automatic appearance and configurable response style.
+**Description:** Talk to your Pebble and get answers from your preferred AI conversation agent. WISP displays answers and, on speaker-capable watches, speaks the displayed response through the separate Universal TTS plugin. Choose your preferred AI provider in its plugin settings, and select Universal TTS or retain your existing Direct Google TTS setup. Includes adjustable volume, font size, day/night/automatic appearance and configurable response style.
 
 Support development: https://ko-fi.com/ericmccormick
 
 ## SDK attribution
 
 The vendored `src/pkjs/universal_tts.js`, `src/c/universal_tts.c` and `src/c/universal_tts.h` are copied from the Universal TTS 1.2 SDK, distributed under the MIT license (see `src/c/UNIVERSAL_TTS_LICENSE.txt`). The plugin and WISP are maintained separately.
+
+## Upgrade compatibility
+
+WISP 2.2.1 preserves the original watchapp UUID, the Direct Gemini API selection, the original Direct Google Cloud TTS option, saved `TTS_BACKEND=direct`, `TTS_API_KEY`, `TTS_VOICE`, and explicit text-only settings. Existing direct users need not install Universal TTS to retain Google voice playback. The direct adapter uses the legacy Google API request and streams audio through the same common native TTS receiver as the plugin. Fresh installs use Universal TTS by default.
+
+**If WISP 2.2.0 already ran on your device:** that build removed `TTS_API_KEY` and `TTS_VOICE` from app local storage and switched direct mode to plugin mode. Deleted credentials cannot reliably be restored; select **Direct Google Cloud TTS (legacy)** in WISP settings and re-enter your key and voice if necessary. WISP 2.2.1 will preserve them thereafter. Do not uninstall/reinstall the app when upgrading, since reinstalling can clear stored settings.
