@@ -248,7 +248,9 @@ var legacyGoogleTts=GoogleTtsLegacy.create({
   },
   onComplete:function(){console.log('Direct Google TTS transfer complete');}
 });
-var universalTts=UniversalTts.create({
+// Direct Gemini + Direct Google users do not need a phone with plugin support.
+// Initialize the real Universal TTS client only when invokeAction is available.
+var universalTts=typeof Pebble.invokeAction==='function'?UniversalTts.create({
   Pebble:Pebble,
   pluginId:UNIVERSAL_TTS_PLUGIN_UUID,
   storage:localStorage,
@@ -257,7 +259,11 @@ var universalTts=UniversalTts.create({
     Pebble.sendAppMessage({COMMAND:'TTS_FAILURE'},function(){},function(){});
   },
   onComplete:function(){console.log('Universal TTS transfer complete');}
-});
+}):{
+  speak:function(){return Promise.reject(Error('Update Pebble phone app to use Universal TTS'));},
+  stop:function(){},
+  handleMessage:function(){return false;}
+};
 
 // =========================================================================
 // SECTION 7: DYNAMIC MENU CONFIGURATION TREE
