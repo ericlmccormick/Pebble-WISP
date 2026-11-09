@@ -25,6 +25,10 @@ jobs:
           node --check tests/plugin_settings_ui.test.cjs
           node --check src/pkjs/agent_plugins.js
           node --check tests/agent_plugins.test.cjs
+      - name: Test native watch speaker stream lifecycle
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -Itests/mock -Isrc/c tests/native_audio_lifecycle_test.c -o /tmp/wisp-audio-test
+          /tmp/wisp-audio-test
       - name: Test audio protocol and release hardening
         run: |
           node tests/pkjs_protocol_test.js
