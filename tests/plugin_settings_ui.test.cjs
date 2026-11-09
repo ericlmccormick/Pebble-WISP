@@ -69,4 +69,38 @@ assert.equal(manifest.pebble.displayName,'WISP');
 assert.equal(manifest.name,'wisp');
 assert.ok(manifest.pebble.usesPermissions.some(x=>x.name==='UniversalTtsSpeak'));
 assert.equal(manifest.pebble.usesPermissions.some(x=>x.name==='GoogleTtsSpeak'),false);
+// A pre-plugin phone install with direct AI and direct Google voice must
+// initialize without Pebble.invokeAction. This was a legacy upgrade trap.
+const directStore={
+  GEMINI_BACKEND:'direct',GEMINI_API_KEY:'existing-direct-gemini',
+  TTS_BACKEND:'direct',TTS_API_KEY:'existing-direct-google',
+  TTS_VOICE:'en-US-Neural2-F'
+};
+const noPluginPebble={
+  getActiveWatchInfo:()=>({platform:'emery'}),
+  addEventListener:()=>{},
+  sendAppMessage:(msg,ok)=>{if(ok)ok();},
+  openURL:()=>{}
+};
+const noPluginCtx={
+  Pebble:noPluginPebble,
+  localStorage:{
+    getItem:k=>directStore[k]??null,
+    setItem:(k,v)=>{directStore[k]=String(v);},
+    removeItem:k=>delete directStore[k]
+  },
+  require:name=>name==='./universal_tts'?{
+    create:()=>{throw Error('Universal TTS client must not initialize without invokeAction');}
+  }:name==='./google_tts_legacy'?{
+    create:()=>({speak:async()=>{},stop:()=>{},handleMessage:()=>false})
+  }:name==='./agent_plugins'?require('../src/pkjs/agent_plugins'):Clay,
+  console,Date,Math,JSON,Promise,isFinite,parseInt,setTimeout,clearTimeout,
+  encodeURIComponent,decodeURIComponent
+};
+vm.runInNewContext(app,noPluginCtx);
+assert.equal(noPluginCtx.geminiBackend,'direct');
+assert.equal(noPluginCtx.ttsBackend,'direct');
+assert.equal(directStore.TTS_API_KEY,'existing-direct-google');
+assert.equal(directStore.TTS_VOICE,'en-US-Neural2-F');
+assert.equal(typeof noPluginCtx.legacyGoogleTts.speak,'function');
 console.log('PASS: Direct Google TTS upgrade retains voice/key, opt-out and Universal TTS selection');
