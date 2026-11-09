@@ -71,7 +71,7 @@ assert.doesNotMatch(program,/if\s*\(\s*result\.kind\s*===\s*['"]receipt['"]\s*\)
   'delivery receipts must not bypass text-to-speech after being displayed');
 assert.doesNotMatch(program,/if\s*\(\s*data\.delivery_receipt\s*\)/,
   'no special text-only receipt path may bypass TTS');
-assert.match(program,/var rawSentences = displayText\.match/,
+assert.match(program,/sentenceQueue = splitSpeechText\(displayText, 450\)/,
   'TTS must receive the same content displayed on the watch');
 
 assert.match(program,/refreshAgentInfo\(\)/);
@@ -141,6 +141,15 @@ assert.equal(context.normalizeTtsVoice('en-US-Studio-M'), 'en-US-Wavenet-D');
 assert.equal(context.normalizeTtsVoice('en-US-Journey-F'), 'en-US-Wavenet-F');
 assert.equal(context.normalizeTtsVoice('en-US-Wavenet-D'), 'en-US-Wavenet-D');
 assert.equal(context.isInvalidVoiceError(Error("Voice 'en-US-Chirp3-HD-F' does not exist. Is it misspelled?")), true);
+const longSpeech='One '.repeat(180);
+const segments=context.splitSpeechText(longSpeech,450);
+assert.ok(segments.length>=2, 'overlong single sentences must be segmented');
+assert.ok(segments.every(x=>x.length<=450), 'Universal TTS maximum is 500 chars per action');
+assert.equal(segments.join(' '),longSpeech.trim(),'the full reply must be spoken');
+const unicodeSpeech='🌍'.repeat(260);
+const unicodeSegments=context.splitSpeechText(unicodeSpeech,450);
+assert.ok(unicodeSegments.every(x=>!/[\\uD800-\\uDBFF]$/.test(x)&&! /^[\\uDC00-\\uDFFF]/.test(x)),
+  'speech segments must not split Unicode surrogate pairs');
 
 assert.equal(api.adpcm([0, 1200, -1200, 1000]).length, 2, 'ADPCM is 4 bits/sample');
 const wav = Buffer.alloc(44 + 8);
