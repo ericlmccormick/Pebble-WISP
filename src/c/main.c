@@ -42,6 +42,8 @@ static int s_agent_icon = 0;
 static TextLayer *s_prompt_layer;               
 static Layer *s_arrow_layer;                    
 static Layer *s_pinwheel_layer;                 
+static AppTimer *s_reply_timer;
+static int32_t s_request_id;
 static AppTimer *s_pinwheel_timer = NULL;       
 static int s_pinwheel_angle = 0;                
 static DictationSession *s_dictation_session;   
@@ -231,13 +233,19 @@ static void set_status(const char* status) {
 
 static void update_text_layout() {
   Layer *window_layer = window_get_root_layer(s_main_window); 
-  int16_t screen_width = layer_get_bounds(window_layer).size.w; 
-  int16_t text_width = screen_width - 10;       
+  GSize screen = layer_get_bounds(window_layer).size;
+  int16_t screen_width = screen.w;
+  GRect frame = layer_get_frame(text_layer_get_layer(s_text_layer));
+  int16_t text_width = screen_width - 2 * frame.origin.x;
   text_layer_set_size(s_text_layer, GSize(text_width, 2000)); 
   GSize max_size = text_layer_get_content_size(s_text_layer); 
   max_size.h += 30;                             
-  text_layer_set_size(s_text_layer, max_size);  
-  scroll_layer_set_content_size(s_scroll_layer, GSize(screen_width, max_size.h + 10)); 
+  text_layer_set_size(s_text_layer, GSize(text_width, max_size.h));
+  int16_t content_height = max_size.h + 10;
+#ifdef PBL_ROUND
+  content_height = ((content_height + screen.h - 1) / screen.h) * screen.h;
+#endif
+  scroll_layer_set_content_size(s_scroll_layer, GSize(screen_width, content_height));
 }
 
 // =========================================================================
@@ -558,6 +566,7 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
     stop_audio();                               
   }
   #endif
+  set_ui_state(UI_STATE_IDLE);
   send_watch_status();
   dictation_session_start(s_dictation_session); 
 }
@@ -610,6 +619,10 @@ static void window_click_config_provider(void *context) {
 
 static void set_ui_state(UIState state) {
   s_current_state = state;
+  if (state != UI_STATE_THINKING && s_reply_timer) {
+    app_timer_cancel(s_reply_timer);
+    s_reply_timer = NULL;
+  }
   if (state != UI_STATE_THINKING && s_pinwheel_timer) {
     app_timer_cancel(s_pinwheel_timer);
     s_pinwheel_timer = NULL;
@@ -704,15 +717,17 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       icon?icon->value->int32:0);
     return;
   }
-  if (strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) { 
-    bool no_audio = false;
+  bool direct_test = strcmp(command_tuple->value->cstring, "DIRECT_TEST_RESULT") == 0;
+  if (direct_test && s_current_state == UI_STATE_THINKING) return;
+  if (direct_test || strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) {
+    Tuple *request = dict_find(iterator, MESSAGE_KEY_REQUEST_ID);
+    if (request && (s_current_state != UI_STATE_THINKING ||
+                    request->value->int32 != s_request_id)) return;
     #ifdef PBL_SPEAKER
+      bool no_audio = false;
       stop_audio(); // Discard previous answer before accepting a new session.
-    #endif
-
-    #ifdef PBL_SPEAKER
       // MULTIPLEXING INTERCEPT: Determine if the phone told us to expect audio chunks
-      if (strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
+      if (direct_test || strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
         no_audio = true;
         s_ignore_audio = true;
       }
@@ -724,6 +739,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       text_layer_set_text(s_text_layer, s_gemini_text); 
       update_text_layout();                     
       
+      scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
       set_ui_state(UI_STATE_RESULTS);          
 
       #ifdef PBL_SPEAKER
@@ -872,32 +888,54 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   }
 }
 
-static void dictation_session_callback(DictationSession *session, DictationSessionStatus status, char *transcription, void *context) {
-  if (status == DictationSessionStatusSuccess) { 
-    set_ui_state(UI_STATE_THINKING);            
-    text_layer_set_text(s_text_layer, "");      
-    update_text_layout();                       
+static void request_failed(const char *message) {
+  set_ui_state(UI_STATE_IDLE);
+  text_layer_set_text(s_prompt_layer, message);
+}
 
-    DictionaryIterator *iter;                   
-    app_message_outbox_begin(&iter);            
-    dict_write_cstring(iter, MESSAGE_KEY_COMMAND, "DICTATION");
-#ifdef PBL_SPEAKER
-    dict_write_int32(iter, MESSAGE_KEY_SPEAKER_CAPABLE, 1);
-#else
-    dict_write_int32(iter, MESSAGE_KEY_SPEAKER_CAPABLE, 0);
-#endif 
-    dict_write_cstring(iter, MESSAGE_KEY_TEXT, transcription);  
-    
-    #ifdef PBL_SPEAKER
-      dict_write_int32(iter, MESSAGE_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    #else
-      dict_write_int32(iter, MESSAGE_KEY_VOLUME, 0); 
-    #endif
-    
-    app_message_outbox_send();                  
-  } else {
-    set_ui_state(UI_STATE_IDLE);                
+static void reply_timeout(void *context) {
+  s_reply_timer = NULL;
+  if (s_current_state == UI_STATE_THINKING) request_failed("Timed out. Try again");
+}
+
+static void dictation_outbox_failed(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
+  Tuple *request = dict_find(iterator, MESSAGE_KEY_REQUEST_ID);
+  if (request && request->value->int32 == s_request_id && s_current_state == UI_STATE_THINKING)
+    request_failed("Phone unavailable");
+}
+
+static void dictation_session_callback(DictationSession *session, DictationSessionStatus status, char *transcription, void *context) {
+  if (status != DictationSessionStatusSuccess) {
+    request_failed(status == DictationSessionStatusFailureTranscriptionRejected
+                   ? "Select to talk" : "Dictation failed. Retry");
+    return;
   }
+
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
+    request_failed("Phone unavailable");
+    return;
+  }
+  s_request_id = s_request_id >= INT32_MAX ? 1 : s_request_id + 1;
+  dict_write_cstring(iter, MESSAGE_KEY_COMMAND, "DICTATION");
+  dict_write_int32(iter, MESSAGE_KEY_REQUEST_ID, s_request_id);
+  dict_write_cstring(iter, MESSAGE_KEY_TEXT, transcription);
+#ifdef PBL_SPEAKER
+  dict_write_int32(iter, MESSAGE_KEY_SPEAKER_CAPABLE, 1);
+  dict_write_int32(iter, MESSAGE_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f));
+#else
+  dict_write_int32(iter, MESSAGE_KEY_SPEAKER_CAPABLE, 0);
+  dict_write_int32(iter, MESSAGE_KEY_VOLUME, 0);
+#endif
+  if (app_message_outbox_send() != APP_MSG_OK) {
+    request_failed("Phone unavailable");
+    return;
+  }
+  set_ui_state(UI_STATE_THINKING);
+  set_status(NULL);
+  text_layer_set_text(s_text_layer, "");
+  update_text_layout();
+  s_reply_timer = app_timer_register(45000, reply_timeout, NULL);
 }
 
 // =========================================================================
@@ -918,13 +956,19 @@ static void main_window_load(Window *window) {
   text_layer_set_background_color(s_text_layer,GColorBlack);
   text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
 
-  #if defined(PBL_ROUND) 
-    text_layer_enable_screen_text_flow_and_paging(s_text_layer, 5); 
-  #endif
+  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_text_layer));
+#ifdef PBL_ROUND
+  text_layer_enable_screen_text_flow_and_paging(s_text_layer, 8);
+  scroll_layer_set_paging(s_scroll_layer, true);
+  scroll_layer_set_shadow_hidden(s_scroll_layer, true);
+#endif
 
-  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_text_layer)); 
-
+#ifdef PBL_ROUND
+  s_status_layer = text_layer_create(GRect(bounds.size.w / 6, bounds.size.h - 37, bounds.size.w * 2 / 3, 24));
+#else
   s_status_layer = text_layer_create(GRect(0, bounds.size.h - 24, bounds.size.w, 24));
+#endif
+  text_layer_set_overflow_mode(s_status_layer, GTextOverflowModeTrailingEllipsis);
   text_layer_set_background_color(s_status_layer, GColorBlack);
   text_layer_set_text_color(s_status_layer, GColorWhite);
   text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
@@ -936,12 +980,13 @@ static void main_window_load(Window *window) {
 
   // Balanced, centered branding for both round and rectangular Pebbles.
   #if defined(PBL_ROUND)
-    s_logo_layer = bitmap_layer_create(GRect((bounds.size.w-40)/2,14,40,40));
-    s_title_layer = text_layer_create(GRect(8,58,bounds.size.w-16,32));
-    s_byline_layer = text_layer_create(GRect(8,91,bounds.size.w-16,20));
-    s_prompt_layer = text_layer_create(GRect(6,127,bounds.size.w-12,28));
-    s_arrow_layer = layer_create(GRect(bounds.size.w-28,130,20,20));
-    s_pinwheel_layer = layer_create(GRect(bounds.size.w-30,129,22,22));
+    int w = bounds.size.w, h = bounds.size.h;
+    s_logo_layer = bitmap_layer_create(GRect((w - 40) / 2, h / 9, 40, 40));
+    s_title_layer = text_layer_create(GRect(w / 10, h * 35 / 100, w * 8 / 10, 32));
+    s_byline_layer = text_layer_create(GRect(w / 10, h / 2, w * 8 / 10, 23));
+    s_prompt_layer = text_layer_create(GRect(w / 8, h * 64 / 100, w * 3 / 4, 28));
+    s_arrow_layer = layer_create(GRect(w * 85 / 100, h * 65 / 100, 16, 18));
+    s_pinwheel_layer = layer_create(GRect(w * 85 / 100, h * 65 / 100, 16, 18));
   #else
     s_logo_layer = bitmap_layer_create(GRect((bounds.size.w-40)/2,8,40,40));
     s_title_layer = text_layer_create(GRect(8,51,bounds.size.w-16,32));
@@ -958,6 +1003,7 @@ static void main_window_load(Window *window) {
   layer_add_child(s_idle_layer,bitmap_layer_get_layer(s_logo_layer));
   text_layer_set_font(s_title_layer,fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
   text_layer_set_text_alignment(s_title_layer,GTextAlignmentCenter);
+  text_layer_set_overflow_mode(s_title_layer, GTextOverflowModeTrailingEllipsis);
   text_layer_set_text_color(s_title_layer,GColorWhite);
   text_layer_set_background_color(s_title_layer,GColorClear);
   text_layer_set_text(s_title_layer,s_agent_title);
@@ -1001,6 +1047,10 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
+  if (s_reply_timer) {
+    app_timer_cancel(s_reply_timer);
+    s_reply_timer = NULL;
+  }
   if (s_pinwheel_timer) {
     app_timer_cancel(s_pinwheel_timer);
     s_pinwheel_timer = NULL;
@@ -1049,7 +1099,8 @@ static void init() {
     if (s_volume > 1.0f) s_volume = 1.0f; 
   #endif
   
-  app_message_register_inbox_received(inbox_received_callback); 
+  app_message_register_inbox_received(inbox_received_callback);
+  app_message_register_outbox_failed(dictation_outbox_failed);
   app_message_open(12000, 1024);                
   
   s_main_window = window_create();              

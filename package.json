@@ -27,7 +27,9 @@
       "APPEARANCE_MODE",
       "SUNRISE",
       "SUNSET",
-      "SPEAKER_CAPABLE"
+      "SPEAKER_CAPABLE",
+      "REQUEST_ID",
+      "TEST_GEMINI"
     ],
     "projectType": "native",
     "resources": {

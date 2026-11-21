@@ -235,11 +235,33 @@ assert.equal(storage.TTS_API_KEY, 'key-two');
 assert.equal(context.apiErrorMessage(Error('Request timed out'), 'Gemini'), 'Gemini timed out. Try again.');
 assert.match(context.apiErrorMessage(Error('HTTP 429 quota'), 'Gemini'), /usage limit/);
 assert.match(context.apiErrorMessage(Error('unauthenticated'), 'Gemini'), /key\/access/);
+assert.match(context.apiErrorMessage(Error('prepayment credits are depleted'), 'Gemini'), /billing/);
+assert.match(context.apiErrorMessage(Error('model no longer available'), 'Gemini'), /model unavailable/);
 
 async function checkNetwork() {
   context.fetch = () => Promise.resolve({ ok:true, json:()=>Promise.resolve({answer:'ok'}) });
   const ok = await context.requestJsonWithTimeout('test', {}, 1000);
   assert.equal(ok.answer, 'ok');
+  context.sendErrorToWatch('Try again', 47);
+  assert.equal(sent.at(-1).REQUEST_ID, 47);
+  assert.equal(sent.at(-1).COMMAND, 'TEXT_RESPONSE_NO_AUDIO');
+
+  let checked;
+  context.fetch = (url, options) => {
+    checked = {url, options};
+    return Promise.resolve({ok:true, json:()=>Promise.resolve({candidates:[]})});
+  };
+  listeners.webviewclosed({response:encodeURIComponent(JSON.stringify({
+    GEMINI_BACKEND:{value:'direct'}, GEMINI_API_KEY:{value:'key-one'},
+    TEST_GEMINI:{value:true}
+  }))});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(checked.url, /:generateContent$/);
+  assert.equal(checked.options.headers['x-goog-api-key'], 'key-one');
+  assert.equal(checked.url.includes('key-one'), false);
+  assert.equal(sent.at(-1).COMMAND, 'DIRECT_TEST_RESULT');
+  assert.match(sent.at(-1).TEXT, /connection works/);
+
   context.fetch = () => new Promise(()=>{});
   const pending = context.requestJsonWithTimeout('test', {}, 1000);
   const job = scheduled[scheduled.length - 1];

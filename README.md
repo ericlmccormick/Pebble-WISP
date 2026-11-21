@@ -58,3 +58,7 @@ GitHub Actions runs the restored 2.1.6 protocol, an actual WISP 10-second stream
 ## Support
 
 Development support: https://ko-fi.com/ericmccormick
+
+## Direct Gemini setup
+
+Create a Gemini Developer API key in [Google AI Studio](https://aistudio.google.com/apikey). In WISP phone settings, choose Direct Gemini API, enter the key and choose a model available to your project. Open WISP on the watch and choose **Test direct Gemini on save** in the phone settings to see the connection result.

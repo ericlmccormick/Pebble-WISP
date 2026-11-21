@@ -240,6 +240,8 @@ function apiErrorMessage(error, service) {
   if (message.indexOf('timed out') >= 0) return service + ' timed out. Try again.';
   if (/plugin unavailable|plugin support|install\/configure plugin|plugin.*permission|unknown plugin/.test(message))
     return 'Install/configure the '+(service==='Gemini'?'AI Conversation':'Universal TTS')+' plugin and grant permissions.';
+  if (/prepayment|billing|credits.*depleted/.test(message)) return service + ' billing error. Check AI Studio credits.';
+  if (/model.*(?:unavailable|not found|not supported|no longer)|404/.test(message)) return service + ' model unavailable. Choose another in settings.';
   if (/api.key|permission.denied|unauthenticated|401|403/.test(message)) return service + ' key/access error. Check settings.';
   if (/quota|rate.limit|resource.exhausted|429/.test(message)) return service + ' usage limit reached. Try later.';
   if (message.indexOf('voice') >= 0) return 'Voice unavailable. Select WaveNet F.';
@@ -316,7 +318,10 @@ var apiKeysItems = [
       {label:'Gemini 2.5 Flash',value:'gemini-2.5-flash'},
       {label:'Gemini 2.5 Flash-Lite',value:'gemini-2.5-flash-lite'}
     ]
-  }
+  },
+  {type:'toggle',messageKey:'TEST_GEMINI',label:'Test direct Gemini on save',
+    description:'Open WISP on the watch to see the result. Sends a short test prompt to Gemini.',
+    defaultValue:false}
 ];
 if(true){
   // Expose speech settings even if watch metadata arrives late; the watch
@@ -456,6 +461,7 @@ function customClay() {
     // Plugin-owned keys, model and voice must be configured in their plugins.
     fieldVisible('GEMINI_API_KEY', geminiLegacy);
     fieldVisible('GEMINI_MODEL', geminiLegacy);
+    fieldVisible('TEST_GEMINI', geminiLegacy);
     fieldVisible('TTS_API_KEY', ttsLegacy);
     fieldVisible('TTS_VOICE', ttsLegacy);
   }
@@ -561,6 +567,7 @@ Pebble.addEventListener('showConfiguration', function() {
     GEMINI_BACKEND: geminiBackend,
     TTS_BACKEND: ttsBackend,
     GEMINI_MODEL: geminiModel,
+    TEST_GEMINI: false,
     TTS_VOICE: ttsVoice,
     APPEARANCE_MODE: appearanceMode
   });
@@ -631,6 +638,26 @@ Pebble.addEventListener('webviewclosed', function(e) {
     fontSize = settings.FONT_SIZE.value;
     localStorage.setItem("FONT_SIZE", fontSize);         
     Pebble.sendAppMessage({ 'COMMAND': 'UPDATE_FONT', 'FONT_SIZE': parseInt(fontSize) }); 
+  }
+  if (geminiBackend==='direct' && settings.TEST_GEMINI &&
+      (settings.TEST_GEMINI.value===true || settings.TEST_GEMINI.value==='true')) {
+    var testUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+      encodeURIComponent(geminiModel) + ':generateContent';
+    function showTestResult(message) {
+      Pebble.sendAppMessage({COMMAND:'DIRECT_TEST_RESULT', TEXT:message});
+    }
+    if (!geminiApiKey) {
+      showTestResult('Missing Gemini key. Check settings.');
+      return;
+    }
+    requestJsonWithTimeout(testUrl, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-goog-api-key':geminiApiKey},
+      body:JSON.stringify({contents:[{parts:[{text:'Reply OK.'}]}],
+        generationConfig:{maxOutputTokens:8}})
+    }, GEMINI_TIMEOUT_MS).then(function(data) {
+      showTestResult(data.error ? apiErrorMessage(data.error,'Gemini') : 'Direct Gemini connection works.');
+    }).catch(function(error) { showTestResult(apiErrorMessage(error,'Gemini')); });
   }
 });
 
@@ -753,12 +780,12 @@ Pebble.addEventListener('appmessage', function(e) {
 
     // The plugins own credentials; direct requests retain their old keys.
     if (geminiBackend==='direct' && !geminiApiKey) {
-      sendErrorToWatch("Missing Gemini Key. Check settings.");
+      sendErrorToWatch("Missing Gemini Key. Check settings.", dict.REQUEST_ID);
       return;
     }
 
     if (hasSpeaker && ttsBackend==='direct' && !ttsApiKey) {
-      sendErrorToWatch("Direct TTS selected but missing TTS Key.");
+      sendErrorToWatch("Direct TTS selected but missing TTS Key.", dict.REQUEST_ID);
       return;
     }
 
@@ -770,13 +797,15 @@ Pebble.addEventListener('appmessage', function(e) {
       skipAudio = true;    
     }
 
-    fetchGeminiResponse(dict.TEXT, skipAudio);
+    fetchGeminiResponse(dict.TEXT, skipAudio, dict.REQUEST_ID);
   }
 });
 
-function sendErrorToWatch(msg) {
+function sendErrorToWatch(msg, requestId) {
   // Show diagnostic failures without starting a recursive TTS error loop.
-  Pebble.sendAppMessage({ 'COMMAND': 'TEXT_RESPONSE_NO_AUDIO', 'TEXT': msg });
+  var payload = {'COMMAND': 'TEXT_RESPONSE_NO_AUDIO', 'TEXT': msg};
+  if (requestId) payload.REQUEST_ID = requestId;
+  Pebble.sendAppMessage(payload);
 }
 
 // =========================================================================
@@ -806,7 +835,7 @@ function splitSpeechText(text,limit){
   return result;
 }
 
-function fetchGeminiResponse(prompt, skipAudio) {
+function fetchGeminiResponse(prompt, skipAudio, requestId) {
   cancelCurrentAudio();
   var generation = requestGeneration;
   var streamId = nextStreamId = ((nextStreamId + 1) & 0x7fffffff) || 1;
@@ -861,7 +890,7 @@ function fetchGeminiResponse(prompt, skipAudio) {
       var parts = data.candidates[0].content && data.candidates[0].content.parts || [];
       var replyText = parts.map(function(part) { return part.text || ''; }).join(' ').trim();
       if (!replyText) {
-        sendErrorToWatch('Gemini returned no readable text.');
+        sendErrorToWatch('Gemini returned no readable text.', requestId);
         return;
       } 
       
@@ -885,6 +914,7 @@ function fetchGeminiResponse(prompt, skipAudio) {
       }
       // Start audio only once the watch has accepted its new answer/session.
       var textPayload = { 'COMMAND': cmd, 'TEXT': displayText, 'STREAM_ID': streamId };
+      if (requestId) textPayload.REQUEST_ID = requestId;
       function startAnswer() {
         if (generation !== requestGeneration || skipAudio) return;
         console.log('Starting TTS',ttsBackend,'for response stream',streamId);
@@ -904,14 +934,14 @@ function fetchGeminiResponse(prompt, skipAudio) {
 
     } else if (data.error && data.error.message) {
       // Failed requests do not modify the committed conversation history. 
-      sendErrorToWatch(apiErrorMessage(data.error, 'Gemini'));
+      sendErrorToWatch(apiErrorMessage(data.error, 'Gemini'), requestId);
     } else {
-      sendErrorToWatch("Gemini returned no answer.");
+      sendErrorToWatch("Gemini returned no answer.", requestId);
     }
   })
   .catch(function(error) {
     if (generation !== requestGeneration) return;
-    sendErrorToWatch(apiErrorMessage(error,geminiBackend==='direct'?'Gemini':'AI agent'));
+    sendErrorToWatch(apiErrorMessage(error,geminiBackend==='direct'?'Gemini':'AI agent'), requestId);
   });
 }
 
