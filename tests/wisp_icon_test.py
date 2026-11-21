@@ -45,7 +45,7 @@ with Image.open(menu) as im:
 
 with open(root / "package.json") as f:
     manifest = json.load(f)
-assert manifest["version"] == "2.1.0" and manifest["pebble"]["version"] == "2.1.0"
+assert manifest["version"] == manifest["pebble"]["version"] == "2.2.0"
 menuentries = [m for m in manifest["pebble"]["resources"]["media"] if m.get("menuIcon")]
 assert len(menuentries) == 1 and menuentries[0]["file"] == "images/WISP_menu_25.png"
 

@@ -252,7 +252,8 @@ async function checkNetwork() {
     return Promise.resolve({ok:true, json:()=>Promise.resolve({candidates:[]})});
   };
   listeners.webviewclosed({response:encodeURIComponent(JSON.stringify({
-    GEMINI_BACKEND:{value:'direct'}, GEMINI_API_KEY:{value:'key-one'},
+    GEMINI_BACKEND:{value:'direct'}, GEMINI_API_KEY:{value:' \tkey-one\r\n'},
+    TTS_BACKEND:{value:'direct'}, TTS_API_KEY:{value:' \u00a0key-two\t '},
     TEST_GEMINI:{value:true}
   }))});
   await new Promise(resolve => setImmediate(resolve));
@@ -261,6 +262,18 @@ async function checkNetwork() {
   assert.equal(checked.url.includes('key-one'), false);
   assert.equal(sent.at(-1).COMMAND, 'DIRECT_TEST_RESULT');
   assert.match(sent.at(-1).TEXT, /connection works/);
+  assert.equal(storage.GEMINI_API_KEY, 'key-one');
+  assert.equal(storage.TTS_API_KEY, 'key-two');
+  assert.equal(context.ttsApiKey, 'key-two');
+
+  for (const blank of ['', ' \t\r\n']) {
+    listeners.webviewclosed({response:encodeURIComponent(JSON.stringify({
+      GEMINI_API_KEY:{value:blank},
+      TTS_API_KEY:{value:blank}
+    }))});
+    assert.equal(storage.GEMINI_API_KEY, 'key-one');
+    assert.equal(storage.TTS_API_KEY, 'key-two');
+  }
 
   context.fetch = () => new Promise(()=>{});
   const pending = context.requestJsonWithTimeout('test', {}, 1000);

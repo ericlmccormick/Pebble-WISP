@@ -16,8 +16,8 @@ function useStoredBackend(key,hasLegacyKey){return localStorage.getItem(key)||(h
 // SECTION 2: STORAGE MEMORY RECOVERY & TOGGLE LOGIC
 // =========================================================================
 
-var geminiApiKey = localStorage.getItem("GEMINI_API_KEY") || ""; 
-var ttsApiKey = localStorage.getItem("TTS_API_KEY") || "";
+var geminiApiKey = (localStorage.getItem("GEMINI_API_KEY") || "").trim();
+var ttsApiKey = (localStorage.getItem("TTS_API_KEY") || "").trim();
 var geminiBackend=useStoredBackend('GEMINI_BACKEND',!!geminiApiKey);
 if(geminiBackend==='plugin'){geminiBackend=AgentPlugins.agentId();localStorage.setItem('GEMINI_BACKEND',geminiBackend);}
 // Migrate old speech preference once: false means None. Fresh installs
@@ -604,14 +604,18 @@ Pebble.addEventListener('webviewclosed', function(e) {
     localStorage.setItem("CUSTOM_PERSONA", customPersona); 
   }
 
-  if (geminiBackend==='direct' && settings.GEMINI_API_KEY && settings.GEMINI_API_KEY.value !== "") {
-    geminiApiKey = settings.GEMINI_API_KEY.value;
-    localStorage.setItem("GEMINI_API_KEY", geminiApiKey); 
+  // Blank or whitespace-only fields must preserve previously saved keys.
+  var geminiKeyValue = settings.GEMINI_API_KEY && settings.GEMINI_API_KEY.value;
+  var ttsKeyValue = settings.TTS_API_KEY && settings.TTS_API_KEY.value;
+  var newGeminiKey = typeof geminiKeyValue === 'string' ? geminiKeyValue.trim() : '';
+  var newTtsKey = typeof ttsKeyValue === 'string' ? ttsKeyValue.trim() : '';
+  if (geminiBackend==='direct' && newGeminiKey) {
+    geminiApiKey = newGeminiKey;
+    localStorage.setItem("GEMINI_API_KEY", geminiApiKey);
   }
 
-  // An intentionally blank Clay field must not erase a previously saved key.
-  if (ttsBackend==='direct' && settings.TTS_API_KEY && settings.TTS_API_KEY.value) {
-    ttsApiKey = settings.TTS_API_KEY.value;
+  if (ttsBackend==='direct' && newTtsKey) {
+    ttsApiKey = newTtsKey;
     localStorage.setItem("TTS_API_KEY", ttsApiKey);
   }
 
@@ -775,8 +779,8 @@ Pebble.addEventListener('appmessage', function(e) {
     }
     console.log('Dictation audio capability:',hasSpeaker,'volume:',dict.VOLUME,'provider:',ttsBackend);
     refreshAgentInfo();
-    if (!geminiApiKey) geminiApiKey = localStorage.getItem("GEMINI_API_KEY") || "";
-    if (ttsApiKey === null) ttsApiKey = localStorage.getItem("TTS_API_KEY") || "";
+    if (!geminiApiKey) geminiApiKey = (localStorage.getItem("GEMINI_API_KEY") || "").trim();
+    if (ttsApiKey === null) ttsApiKey = (localStorage.getItem("TTS_API_KEY") || "").trim();
 
     // The plugins own credentials; direct requests retain their old keys.
     if (geminiBackend==='direct' && !geminiApiKey) {
