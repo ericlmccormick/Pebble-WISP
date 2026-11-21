@@ -27,7 +27,9 @@
       "APPEARANCE_MODE",
       "SUNRISE",
       "SUNSET",
-      "SPEAKER_CAPABLE"
+      "SPEAKER_CAPABLE",
+      "REQUEST_ID",
+      "TEST_GEMINI"
     ],
     "projectType": "native",
     "resources": {
@@ -248,7 +250,7 @@
     "watchapp": {
       "watchface": false
     },
-    "version": "2.0.0",
+    "version": "2.1.0",
     "manifestVersion": 2,
     "usesPermissions": [
       {
@@ -300,5 +302,5 @@
       }
     ]
   },
-  "version": "2.0.0"
+  "version": "2.1.0"
 }
