@@ -238,12 +238,18 @@ static void update_text_layout() {
   GRect frame = layer_get_frame(text_layer_get_layer(s_text_layer));
   int16_t text_width = screen_width - 2 * frame.origin.x;
   text_layer_set_size(s_text_layer, GSize(text_width, 2000)); 
-  GSize max_size = text_layer_get_content_size(s_text_layer); 
-  max_size.h += 30;                             
-  text_layer_set_size(s_text_layer, GSize(text_width, max_size.h));
-  int16_t content_height = max_size.h + 10;
+  GSize measured = text_layer_get_content_size(s_text_layer);
 #ifdef PBL_ROUND
-  content_height = ((content_height + screen.h - 1) / screen.h) * screen.h;
+  // Round page breaks already add vertical space. Padding before rounding
+  // can push a short suffix onto an extra, empty final page.
+  int used_height = measured.h + frame.origin.y;
+  int content_height = used_height > 0
+    ? ((used_height + screen.h - 1) / screen.h) * screen.h
+    : screen.h;
+  text_layer_set_size(s_text_layer, GSize(text_width, measured.h + 5));
+#else
+  int content_height = measured.h + 40;
+  text_layer_set_size(s_text_layer, GSize(text_width, measured.h + 30));
 #endif
   scroll_layer_set_content_size(s_scroll_layer, GSize(screen_width, content_height));
 }
