@@ -1,1 +1,1 @@
-WISP 2.2.5 generic pre-provider initial screen from six Pebble emulators. Source commit: 41fa2b3b41605ae898361ec88ec19dc0192e3b7e
+WISP 2.2.5 generic pre-provider initial screen from six Pebble emulators. Source commit: a933f85d5c7a3e40bfc00358bc8ba1f1b4f8d841
