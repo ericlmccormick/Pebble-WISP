@@ -322,6 +322,16 @@ if(true){
 
 var clayConfig = [
   { "type": "heading", "defaultValue": "WISP — Wrist Intelligence & Speech Portal" }, 
+  {type: 'section', items: [
+    {type: 'heading', defaultValue: 'Appearance'},
+    {type: 'select', messageKey: 'APPEARANCE_MODE', label: 'Theme', defaultValue: appearanceMode,
+      description: 'Auto follows sunrise and sunset. Without saved times, Day runs from 7 a.m. to 7 p.m.',
+      options: [
+        {label: 'Day', value: 'day'},
+        {label: 'Night', value: 'night'},
+        {label: 'Auto', value: 'auto'}
+      ]}
+  ]},
   {
     "type": "section", 
     "items": [
@@ -355,15 +365,6 @@ var clayConfig = [
     "type": "section", 
     "items": [
       { "type": "heading", "defaultValue": "Display Settings" },
-      {type:'select',messageKey:'APPEARANCE_MODE',label:'Appearance',
-        defaultValue:appearanceMode,
-        description:'Auto follows sunrise and sunset from Weather+ or Weather. Uses cached dates or 7 AM–7 PM local time.',
-        options:[
-          {label:'Auto (sunrise / sunset)',value:'auto'},
-          {label:'Day (light)',value:'day'},
-          {label:'Night (dark)',value:'night'}
-        ]
-      },
       {
         "type": "slider",
         "messageKey": "FONT_SIZE",
