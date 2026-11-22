@@ -2,7 +2,8 @@
 // SECTION 1: SYSTEM HEADERS & PREPROCESSOR MACROS
 // =========================================================================
 
-#include <pebble.h> 
+#include <pebble.h>
+#include "solar_theme.h"
 
 #define MAX_TEXT_LENGTH 2048 
 
@@ -50,26 +51,14 @@ static DictationSession *s_dictation_session;
 static char s_gemini_text[MAX_TEXT_LENGTH];
 #define PERSIST_KEY_APPEARANCE 101
 static int s_appearance_mode = 0; // auto / day / night
-static time_t s_sunrise = 0, s_sunset = 0;
 static bool s_is_night = true;
 #ifdef PBL_SPEAKER
 static TextLayer *s_volume_text_layer;
 #endif
 
 static bool appearance_is_night(void) {
-  if (s_appearance_mode == 1) return false;
-  if (s_appearance_mode == 2) return true;
-  time_t now = time(NULL);
-  struct tm *local = localtime(&now);
-  int minute = local ? local->tm_hour * 60 + local->tm_min : 720;
-  if (s_sunrise > 0 && s_sunset > s_sunrise) {
-    struct tm *rise = localtime(&s_sunrise);
-    int rise_min = rise ? rise->tm_hour * 60 + rise->tm_min : 420;
-    struct tm *set = localtime(&s_sunset);
-    int set_min = set ? set->tm_hour * 60 + set->tm_min : 1140;
-    if (rise_min < set_min) return minute < rise_min || minute >= set_min;
-  }
-  return minute < 420 || minute >= 1140;
+  return solar_theme_dark(s_appearance_mode == 1 ? VG_THEME_DAY :
+                          s_appearance_mode == 2 ? VG_THEME_NIGHT : VG_THEME_AUTO);
 }
 
 static void update_appearance(void) {
@@ -698,20 +687,15 @@ static void update_agent_display(const char *name, int agent) {
   }
 }
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
+  if (solar_theme_receive(iterator)) { update_appearance(); return; }
   Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_COMMAND); 
   if (!command_tuple) return;                   
 
   if (strcmp(command_tuple->value->cstring, "UPDATE_APPEARANCE") == 0) {
     Tuple *mode = dict_find(iterator, MESSAGE_KEY_APPEARANCE_MODE);
-    Tuple *rise = dict_find(iterator, MESSAGE_KEY_SUNRISE);
-    Tuple *set = dict_find(iterator, MESSAGE_KEY_SUNSET);
     if (mode && mode->value->int32 >= 0 && mode->value->int32 <= 2) {
       s_appearance_mode = mode->value->int32;
       persist_write_int(PERSIST_KEY_APPEARANCE, s_appearance_mode);
-    }
-    if (rise && set && rise->value->int32 > 0 && set->value->int32 > rise->value->int32) {
-      s_sunrise = (time_t)rise->value->int32;
-      s_sunset = (time_t)set->value->int32;
     }
     update_appearance();
     return;
@@ -1092,6 +1076,7 @@ static void main_window_unload(Window *window) {
 // =========================================================================
 
 static void init() {
+  solar_theme_load();
   if (persist_exists(PERSIST_KEY_APPEARANCE)) {
     int mode = persist_read_int(PERSIST_KEY_APPEARANCE);
     if (mode >= 0 && mode <= 2) s_appearance_mode = mode;

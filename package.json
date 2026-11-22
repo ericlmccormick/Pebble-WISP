@@ -29,7 +29,11 @@
       "SUNSET",
       "SPEAKER_CAPABLE",
       "REQUEST_ID",
-      "TEST_GEMINI"
+      "TEST_GEMINI",
+      "VG_SUNRISE",
+      "VG_SUNSET",
+      "VG_NEXT_SUNRISE",
+      "VG_NEXT_SUNSET"
     ],
     "projectType": "native",
     "resources": {

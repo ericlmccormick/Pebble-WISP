@@ -37,60 +37,15 @@ var ttsBackend=migrateSpeechProvider();
        
 var appearanceMode = localStorage.getItem('APPEARANCE_MODE') || 'auto';
 if (['auto','day','night'].indexOf(appearanceMode) < 0) appearanceMode='auto';
-var solarCache = null;
-try { solarCache = JSON.parse(localStorage.getItem('APPEARANCE_SOLAR') || 'null'); }
-catch (e) { solarCache = null; }
-var weatherSubscription = null;
+var weatherTheme;
 function sendAppearance() {
   var mode = appearanceMode==='day'?1:(appearanceMode==='night'?2:0);
-  var payload={COMMAND:'UPDATE_APPEARANCE',APPEARANCE_MODE:mode};
-  if (solarCache && solarCache.sunrise>0 && solarCache.sunset>solarCache.sunrise) {
-    payload.SUNRISE=solarCache.sunrise;
-    payload.SUNSET=solarCache.sunset;
-  }
-  Pebble.sendAppMessage(payload,function(){},function(e){console.log('Appearance sync retry at next start',e);});
-}
-function solarTimestamp(property) {
-  if (!property || !property.timestamp) return 0;
-  var value=property.timestamp.value !== undefined ? property.timestamp.value : property.timestamp;
-  var n=Number(value);
-  return isFinite(n) && n>0 ? Math.floor(n) : 0;
+  Pebble.sendAppMessage({COMMAND:'UPDATE_APPEARANCE',APPEARANCE_MODE:mode},
+    function(){}, function(e){console.log('Appearance sync retry at next start',e);});
 }
 function beginWeatherAppearance() {
-  if (weatherSubscription) { weatherSubscription.unsubscribe(); weatherSubscription=null; }
-  if (appearanceMode!=='auto' || typeof Pebble.subscribeToSource!=='function') return;
-  try {
-    weatherSubscription=Pebble.subscribeToSource({
-      category:'weather',item:'location',
-      properties:['sunrise','sunset','daily_sunrise','daily_sunset'],
-      onData:function(envelope){
-        var instances=envelope && envelope.instances || [];
-        var properties=instances.length && instances[0].properties;
-        if (!properties) return;
-        var sunrise=solarTimestamp(properties.sunrise);
-        var sunset=solarTimestamp(properties.sunset);
-        if (!(sunrise>0 && sunset>sunrise)) {
-          var sunriseSeries=properties.daily_sunrise && properties.daily_sunrise.series;
-          var sunsetSeries=properties.daily_sunset && properties.daily_sunset.series;
-          var rises=sunriseSeries && sunriseSeries.timestamp && sunriseSeries.timestamp.values;
-          var sets=sunsetSeries && sunsetSeries.timestamp && sunsetSeries.timestamp.values;
-          var start=Number(sunriseSeries && sunriseSeries.start);
-          var step=Number(sunriseSeries && sunriseSeries.stepSec) || 86400;
-          var dayIndex=isFinite(start)?Math.max(0,Math.floor((Date.now()/1000-start)/step)):0;
-          if (rises && sets && rises.length>dayIndex && sets.length>dayIndex) {
-            sunrise=Number(rises[dayIndex]);
-            sunset=Number(sets[dayIndex]);
-          }
-        }
-        if (sunrise>0 && sunset>sunrise && isFinite(sunrise) && isFinite(sunset)) {
-          solarCache={sunrise:Math.floor(sunrise),sunset:Math.floor(sunset)};
-          localStorage.setItem('APPEARANCE_SOLAR',JSON.stringify(solarCache));
-          sendAppearance();
-        }
-      },
-      onError:function(err){console.log('Weather appearance unavailable; retaining solar cache',err && err.code || err);}
-    });
-  } catch(e) { console.log('Weather subscribe failed',e); }
+  if (!weatherTheme) weatherTheme = require('./theme-weather').create(Pebble, require('message_keys'));
+  weatherTheme.setAuto(appearanceMode === 'auto');
 }
 var fontSize = localStorage.getItem("FONT_SIZE") || 24;          
 var customPersona = localStorage.getItem("CUSTOM_PERSONA") || ""; 
@@ -402,7 +357,7 @@ var clayConfig = [
       { "type": "heading", "defaultValue": "Display Settings" },
       {type:'select',messageKey:'APPEARANCE_MODE',label:'Appearance',
         defaultValue:appearanceMode,
-        description:'Auto follows sunrise and sunset from Weather+ or Weather. Uses cached times or 7 AM–7 PM when unavailable.',
+        description:'Auto follows sunrise and sunset from Weather+ or Weather. Uses cached dates or 7 AM–7 PM local time.',
         options:[
           {label:'Auto (sunrise / sunset)',value:'auto'},
           {label:'Day (light)',value:'day'},
