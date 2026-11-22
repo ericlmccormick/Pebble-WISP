@@ -50,6 +50,11 @@ static int s_pinwheel_angle = 0;
 static DictationSession *s_dictation_session;   
 static char s_gemini_text[MAX_TEXT_LENGTH];
 #define PERSIST_KEY_APPEARANCE 101
+#define PERSIST_KEY_TEXT_SIZE 437
+static bool s_large_text;
+static GFont response_font(void) {
+  return fonts_get_system_font(s_large_text ? FONT_KEY_GOTHIC_28 : FONT_KEY_GOTHIC_24);
+}
 static int s_appearance_mode = 0; // auto / day / night
 static bool s_is_night = true;
 #ifdef PBL_SPEAKER
@@ -868,11 +873,9 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   else if (strcmp(command_tuple->value->cstring, "UPDATE_FONT") == 0) { 
     Tuple *font_tuple = dict_find(iterator, MESSAGE_KEY_FONT_SIZE); 
     if (font_tuple) {
-      int new_size = font_tuple->value->int32;   
-      if (new_size <= 14) text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-      else if (new_size <= 18) text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
-      else if (new_size <= 24) text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
-      else text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28));
+      s_large_text = font_tuple->value->int32 > 24;
+      persist_write_bool(PERSIST_KEY_TEXT_SIZE, s_large_text);
+      text_layer_set_font(s_text_layer, response_font());
       update_text_layout();                     
     }
   }
@@ -944,7 +947,7 @@ static void main_window_load(Window *window) {
   text_layer_set_text_alignment(s_text_layer, GTextAlignmentLeft);
   text_layer_set_text_color(s_text_layer,GColorWhite);
   text_layer_set_background_color(s_text_layer,GColorBlack);
-  text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
+  text_layer_set_font(s_text_layer, response_font());
 
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_text_layer));
 #ifdef PBL_ROUND
@@ -1077,6 +1080,7 @@ static void main_window_unload(Window *window) {
 
 static void init() {
   solar_theme_load();
+  s_large_text = persist_exists(PERSIST_KEY_TEXT_SIZE) && persist_read_bool(PERSIST_KEY_TEXT_SIZE);
   if (persist_exists(PERSIST_KEY_APPEARANCE)) {
     int mode = persist_read_int(PERSIST_KEY_APPEARANCE);
     if (mode >= 0 && mode <= 2) s_appearance_mode = mode;

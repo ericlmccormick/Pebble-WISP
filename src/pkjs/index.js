@@ -47,7 +47,7 @@ function beginWeatherAppearance() {
   if (!weatherTheme) weatherTheme = require('./theme-weather').create(Pebble, require('message_keys'));
   weatherTheme.setAuto(appearanceMode === 'auto');
 }
-var fontSize = localStorage.getItem("FONT_SIZE") || 24;          
+var fontSize = Number(localStorage.getItem("FONT_SIZE")) > 24 ? 28 : 24;
 var customPersona = localStorage.getItem("CUSTOM_PERSONA") || ""; 
 
 // Restore dynamic dropdown configurations with updated default
@@ -366,13 +366,11 @@ var clayConfig = [
     "items": [
       { "type": "heading", "defaultValue": "Display Settings" },
       {
-        "type": "slider",
+        "type": "select",
         "messageKey": "FONT_SIZE",
-        "defaultValue": parseInt(fontSize), 
-        "label": "Font Size",
-        "min": 14,
-        "max": 28,
-        "step": 2
+        "defaultValue": String(fontSize),
+        "label": "Text size",
+        "options": [{"label":"Normal","value":"24"},{"label":"Large","value":"28"}]
       }
     ]
   },
@@ -595,9 +593,9 @@ Pebble.addEventListener('webviewclosed', function(e) {
     beginWeatherAppearance();
   }
   if (settings.FONT_SIZE) {
-    fontSize = settings.FONT_SIZE.value;
+    fontSize = Number(settings.FONT_SIZE.value) > 24 ? 28 : 24;
     localStorage.setItem("FONT_SIZE", fontSize);         
-    Pebble.sendAppMessage({ 'COMMAND': 'UPDATE_FONT', 'FONT_SIZE': parseInt(fontSize) }); 
+    sendFontSize(2);
   }
   if (geminiBackend==='direct' && settings.TEST_GEMINI &&
       (settings.TEST_GEMINI.value===true || settings.TEST_GEMINI.value==='true')) {
@@ -696,14 +694,18 @@ function refreshAgentInfo(){
     });
 }
 
+function sendFontSize(retries) {
+  Pebble.sendAppMessage({COMMAND: 'UPDATE_FONT', FONT_SIZE: fontSize}, null, function() {
+    if (retries > 0) setTimeout(function() { sendFontSize(retries - 1); }, 500);
+  });
+}
+
 Pebble.addEventListener('ready', function() {
   detectSpeakerFromInfo();
   refreshAgentInfo();
   sendAppearance();
   beginWeatherAppearance();
-  if (fontSize != 24) {
-    Pebble.sendAppMessage({ 'COMMAND': 'UPDATE_FONT', 'FONT_SIZE': parseInt(fontSize) }); 
-  }
+  sendFontSize(2);
 });
 
 Pebble.addEventListener('appmessage', function(e) {
